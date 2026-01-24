@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Docker Hub push script for dgx-vllm v15
+# Docker Hub push script for dgx-vllm v75
 # Target repository: avarok/vllm-dgx-spark
 
 IMAGE_NAME="dgx-vllm"
-VERSION="15"
+VERSION="75"
 DOCKER_HUB_REPO="avarok/vllm-dgx-spark"
 BUILD_DATE=$(date +%Y-%m-%d)
 
@@ -39,6 +39,7 @@ echo "  - ${DOCKER_HUB_REPO}:latest"
 echo "  - ${DOCKER_HUB_REPO}:v${VERSION}"
 echo "  - ${DOCKER_HUB_REPO}:${VERSION}"
 echo "  - ${DOCKER_HUB_REPO}:cutlass"
+echo "  - ${DOCKER_HUB_REPO}:nvfp4"
 echo "  - ${DOCKER_HUB_REPO}:${BUILD_DATE}"
 echo ""
 
@@ -46,6 +47,7 @@ docker tag "${IMAGE_NAME}:latest" "${DOCKER_HUB_REPO}:latest"
 docker tag "${IMAGE_NAME}:latest" "${DOCKER_HUB_REPO}:v${VERSION}"
 docker tag "${IMAGE_NAME}:latest" "${DOCKER_HUB_REPO}:${VERSION}"
 docker tag "${IMAGE_NAME}:latest" "${DOCKER_HUB_REPO}:cutlass"
+docker tag "${IMAGE_NAME}:latest" "${DOCKER_HUB_REPO}:nvfp4"
 docker tag "${IMAGE_NAME}:latest" "${DOCKER_HUB_REPO}:${BUILD_DATE}"
 
 echo "Step 3: Pushing to Docker Hub"
@@ -57,6 +59,7 @@ docker push "${DOCKER_HUB_REPO}:latest"
 docker push "${DOCKER_HUB_REPO}:v${VERSION}"
 docker push "${DOCKER_HUB_REPO}:${VERSION}"
 docker push "${DOCKER_HUB_REPO}:cutlass"
+docker push "${DOCKER_HUB_REPO}:nvfp4"
 docker push "${DOCKER_HUB_REPO}:${BUILD_DATE}"
 
 if [ $? -eq 0 ]; then
@@ -68,6 +71,7 @@ if [ $? -eq 0 ]; then
   echo "  - ${DOCKER_HUB_REPO}:v${VERSION} (version-pinned)"
   echo "  - ${DOCKER_HUB_REPO}:${VERSION} (short version)"
   echo "  - ${DOCKER_HUB_REPO}:cutlass (feature tag)"
+  echo "  - ${DOCKER_HUB_REPO}:nvfp4 (NVFP4 complete integration)"
   echo "  - ${DOCKER_HUB_REPO}:${BUILD_DATE} (date-stamped)"
   echo ""
   echo "Pull command:"
