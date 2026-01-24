@@ -1,0 +1,15 @@
+VERSION=75
+BUILD_DATE=2026-01-23
+VLLM_SOURCE=main-branch-latest
+PYTORCH_VERSION=stable-cu130
+FLASHINFER_VERSION=latest-pre
+XGRAMMAR_VERSION=latest-stable
+TRITON_VERSION=3.6.0
+CUDA_VERSION=13.0.2
+CUDA_FP4_EXTENSION=v1.0.0
+BASE_IMAGE=nvidia/cuda:13.0.2-cudnn-devel-ubuntu24.04
+CUTLASS_SUPPORT=enabled
+COMPUTE_CAPABILITY=12.1f
+FP4_SUPPORT=cutlass-enabled-flashinfer-jit
+FP8_SUPPORT=triton-optimized
+NVFP4_SUPPORT=cutlass-enabled-flashinfer-jit

@@ -11,45 +11,83 @@ Production-ready Docker image for running vLLM on NVIDIA DGX systems with Grace 
 - **Auto-Updating**: Latest vLLM from main branch pulled at build time
 - **Easy Scaling**: Extend with model-specific Dockerfiles for quick deployment
 
-## Version 15 Updates (January 2026)
+## Version 75 - Complete NVFP4 Integration (January 2026)
 
-This version merges CUTLASS support into the standard image and uses latest dependencies:
+**BREAKTHROUGH PERFORMANCE: 65 tok/sec on Qwen3-30B-A3B-NVFP4**
 
-**Updated Components**:
-- vLLM: Now pulls latest from main branch (auto-updated at build time)
-- PyTorch: Nightly builds with CUDA 13.0
-- FlashInfer: Latest pre-release
-- XGrammar: Latest stable
-- CUTLASS: Enabled with full Blackwell kernel support
+This version delivers the **first complete FP4 integration** for vLLM on CUDA 13.0 with GB10 hardware:
 
-**New Features**:
-- CUTLASS kernel support (FP4, FP6, FP8 MoE/GEMM)
-- NVFP4 quantization for GB10 hardware
-- Dual compute capability support (12.0f, 12.1f)
-- Version labels in image metadata
-- Automated Docker Hub publishing
+### The Stack (Lowest to Highest)
 
-**Docker Hub**: Now available at `avarok/vllm-dgx-spark`
+1. **Hardware**: NVIDIA GB10 (Blackwell) - SM_121 compute capability
+2. **CUDA 13.0.2**: Custom FP4 type implementation (nv_fp4_dummy.h) - 280+ lines
+3. **CUTLASS**: FP4 GEMM and MoE kernels enabled for SM_121
+4. **FlashInfer**: FP4-aware JIT compilation for attention kernels
+5. **PyTorch**: Nightly with CUDA 13.0 support
+6. **vLLM**: Main branch with SM_121 backend selection patches
+7. **Model**: nvidia/Qwen3-30B-A3B-NVFP4 quantized model
+
+### Performance Achievements
+
+| Version | Format | Performance | Improvement |
+|---------|--------|-------------|-------------|
+| Previous NVFP4 | FP4 | 35 tok/sec | Baseline |
+| FP8 Optimized | FP8 | 40 tok/sec | 1.14x |
+| **v75 Complete** | **FP4** | **65 tok/sec** | **1.86x over NVFP4, 1.62x over FP8** |
+
+### Quick Start - Best Performance
+
+**1-liner for Qwen3-30B NVFP4 at 65 tok/sec:**
+
+```bash
+docker run -d --name vllm-qwen-nvfp4 --gpus all --network host \
+  -e MODEL=nvidia/Qwen3-30B-A3B-NVFP4 -e PORT=8888 -e MAX_MODEL_LEN=4096 \
+  -e GPU_MEMORY_UTIL=0.60 -v $HOME/.cache/huggingface:/root/.cache/huggingface \
+  avarok/vllm-dgx-spark:v75 serve
+```
+
+**Test inference:**
+```bash
+curl http://localhost:8888/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"nvidia/Qwen3-30B-A3B-NVFP4","messages":[{"role":"user","content":"Hello!"}],"max_tokens":100}' \
+  | jq -r '.choices[0].message.content'
+```
+
+### Technical Implementation
+
+**What's New in v75:**
+- Complete FP4 type system for CUDA 13.0 (3 types, 5 intrinsics, 9 operators)
+- CUTLASS FP4 kernels enabled for SM_121 (GB10)
+- FlashInfer JIT compilation with full FP4 operator support
+- CCCL header patching for build-time compilation
+- Post-install FlashInfer header patching for runtime JIT
+
+**Key Files:**
+- `nv_fp4_dummy.h` - Complete FP4 type implementation
+- `patch_flashinfer_fp4.sh` - FlashInfer JIT support
+- `patch_cccl_fp4.sh` - CCCL header patching
+- `integrate_sm121_fp8_fix_v2.sh` - Backend selection for SM_121
+
+**Docker Hub**: Available at `avarok/vllm-dgx-spark`
 
 ```bash
 # Pull from Docker Hub
+docker pull avarok/vllm-dgx-spark:v75
 docker pull avarok/vllm-dgx-spark:latest
-docker pull avarok/vllm-dgx-spark:v15
-docker pull avarok/vllm-dgx-spark:cutlass
 ```
 
-**Migration from v14**:
+**Build Locally**:
 ```bash
-# Local build
 cd /workspace/dgx-vllm-build
-IMAGE_VERSION=15 ./build.sh
-
-# Or use Docker Hub image
-docker pull avarok/vllm-dgx-spark:v15
-
-# Existing scripts work without modification
-# Just update image reference if desired
+IMAGE_VERSION=75 ./build.sh
 ```
+
+### Blog Article
+
+Read the full story: [NVFP4 is Finally Here: from 40 (FP8) to 65tps Qwen3-Next!](https://blog.avarok.net/)
+
+Previous optimization: [From 20 to 35 Tokens/Second: Optimizing NVFP4 Inference on Blackwell GB10](https://blog.avarok.net/from-20-to-35-tokens-second-optimizing-nvfp4-inference-on-blackwell-gb10-306a84bff467)
 
 ## Quick Start
 
