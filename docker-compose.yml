@@ -1,0 +1,60 @@
+version: '3.8'
+
+services:
+  # Ray head node + vLLM server on first DGX node
+  ray-head:
+    image: dgx-vllm:latest
+    container_name: dgx-vllm-head
+    network_mode: host
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=0
+      - HEAD_IP=10.10.10.1
+      - NUM_GPUS=1
+      - NCCL_SOCKET_IFNAME=enp1s0f0np0
+      - GLOO_SOCKET_IFNAME=enp1s0f0np0
+      - TP_SOCKET_IFNAME=enp1s0f0np0
+    volumes:
+      - /home/nologik/.cache/huggingface:/root/.cache/huggingface
+      - /home/nologik/tiktoken_encodings:/app/tiktoken_encodings
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0']
+              capabilities: [gpu]
+    command: ray-head
+    restart: unless-stopped
+
+  # vLLM server (runs on head node, connects to Ray cluster)
+  vllm-server:
+    image: dgx-vllm:latest
+    container_name: dgx-vllm-server
+    network_mode: host
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - HEAD_IP=10.10.10.1
+      - MODEL=DevQuasar/Qwen.Qwen3-Next-80B-A3B-Instruct-FP8-Dynamic
+      - PORT=8888
+      - TENSOR_PARALLEL_SIZE=2
+      - MAX_MODEL_LEN=131072
+      - GPU_MEMORY_UTIL=0.75
+      - MAX_NUM_SEQS=128
+      - NCCL_SOCKET_IFNAME=enp1s0f0np0
+      - GLOO_SOCKET_IFNAME=enp1s0f0np0
+      - TP_SOCKET_IFNAME=enp1s0f0np0
+      - MASTER_ADDR=10.10.10.1
+      - MASTER_PORT=29500
+      - VLLM_EXTRA_ARGS=--trust-remote-code --enable-auto-tool-choice --tool-call-parser hermes
+    volumes:
+      - /home/nologik/.cache/huggingface:/root/.cache/huggingface
+      - /home/nologik/tiktoken_encodings:/app/tiktoken_encodings
+    depends_on:
+      - ray-head
+    command: serve
+    restart: unless-stopped
+
+# Note: Ray worker should be started on the second DGX node (10.10.10.2)
+# Use: docker-compose -f docker-compose.worker.yml up -d

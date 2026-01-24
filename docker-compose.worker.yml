@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  # Ray worker node on second DGX node
+  ray-worker:
+    image: dgx-vllm:latest
+    container_name: dgx-vllm-worker
+    network_mode: host
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=0
+      - HEAD_IP=10.10.10.1
+      - WORKER_IP=10.10.10.2
+      - NUM_GPUS=1
+      - NCCL_SOCKET_IFNAME=enp1s0f0np0
+      - GLOO_SOCKET_IFNAME=enp1s0f0np0
+      - TP_SOCKET_IFNAME=enp1s0f0np0
+    volumes:
+      - /home/nologik/.cache/huggingface:/root/.cache/huggingface
+      - /home/nologik/tiktoken_encodings:/app/tiktoken_encodings
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0']
+              capabilities: [gpu]
+    command: ray-worker
+    restart: unless-stopped
