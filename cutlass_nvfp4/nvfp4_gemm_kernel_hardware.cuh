@@ -25,12 +25,12 @@ namespace cutlass_nvfp4 {
 /**
  * @brief Hardware tensor core configuration for GB10
  *
- * GB10's e2m1 tensor cores use 16×8×16 MMA shape:
+ * GB10's e2m1 tensor cores use 16x8x16 MMA shape:
  * - M=16: Output rows
  * - N=8: Output columns
  * - K=16: Inner dimension
  *
- * Each MMA instruction computes a 16×8 tile of output
+ * Each MMA instruction computes a 16x8 tile of output
  */
 struct TensorCoreConfigGB10 {
     // MMA instruction shape (hardware-defined for e2m1)
@@ -192,7 +192,7 @@ void load_B_tile_tc(
  *
  * This is the real GB10 tensor core implementation!
  *
- * Each warp computes a 32×64 output tile using multiple 16×8×16 MMA operations
+ * Each warp computes a 32x64 output tile using multiple 16x8x16 MMA operations
  */
 template <typename Config>
 __device__ __forceinline__
@@ -212,8 +212,8 @@ void compute_tile_product_hardware(
     const int warp_m_offset = warp_m * Config::WARP_TILE_M;  // 0, 32, 64, 96
     const int warp_n_offset = warp_n * Config::WARP_TILE_N;  // 0, 64
 
-    // Each warp processes WARP_TILE_M × WARP_TILE_N = 32×64 output
-    // Using MMA 16×8×16, we need:
+    // Each warp processes WARP_TILE_M x WARP_TILE_N = 32x64 output
+    // Using MMA 16x8x16, we need:
     // - 2 MMA tiles in M (32/16 = 2)
     // - 8 MMA tiles in N (64/8 = 8)
     // - 4 iterations in K (64/16 = 4)
@@ -222,7 +222,7 @@ void compute_tile_product_hardware(
     const int num_mma_n = Config::WARP_TILE_N / Config::MMA_N;  // 8
     const int num_mma_k = Config::TILE_K / Config::MMA_K;       // 4
 
-    // Accumulator layout: Each thread holds parts of multiple 16×8 tiles
+    // Accumulator layout: Each thread holds parts of multiple 16x8 tiles
     // For m16n8k16, each thread owns 2 output elements (per MMA instruction)
     int acc_idx = 0;
 
@@ -233,7 +233,7 @@ void compute_tile_product_hardware(
             int out_m = warp_m_offset + mma_m * Config::MMA_M;
             int out_n = warp_n_offset + mma_n * Config::MMA_N;
 
-            // Accumulators for this 16×8 tile (per thread: 2 FP32 values)
+            // Accumulators for this 16x8 tile (per thread: 2 FP32 values)
             float acc_0 = 0.0f;
             float acc_1 = 0.0f;
 
@@ -423,8 +423,8 @@ __global__ void nvfp4_gemm_kernel_hardware(
 
     __shared__ TensorCoreSharedMemory<Config> smem;
 
-    // Accumulator: Each warp computes WARP_TILE_M × WARP_TILE_N
-    // With 16×8 MMA: (32×64) / (16×8) = 16 MMA tiles
+    // Accumulator: Each warp computes WARP_TILE_M x WARP_TILE_N
+    // With 16x8 MMA: (32x64) / (16x8) = 16 MMA tiles
     // Each thread holds 2 FP32 per MMA tile = 32 FP32 total
     constexpr int acc_size = (Config::WARP_TILE_M * Config::WARP_TILE_N) / (Config::MMA_M * Config::MMA_N) * 2;
     float accumulator[acc_size];

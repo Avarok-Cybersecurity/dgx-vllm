@@ -1,0 +1,54 @@
+# Build logs
+build-v*.log
+*-build.log
+*.log.bak
+
+# Dockerfile backups
+Dockerfile.v*
+Dockerfile.*.backup
+
+# Entrypoint backups
+entrypoint_v*.sh
+entrypoint-v*.sh
+
+# Build metrics
+BUILD_ITERATIONS.csv
+
+# Old build scripts (keep only build.sh)
+build-v*.sh
+
+# Patch files (intermediate)
+*.patch
+vllm_patch.diff
+
+# Backup files
+*.backup
+
+# Old version-specific docs (keep README.md and MEDIUM_ARTICLE.md)
+README_v*.md
+v*_QUICK_START.md
+V*_SUMMARY.md
+V*_RESULTS.md
+V*_BUILD_SUMMARY.md
+V*_FAILURE_ANALYSIS.md
+V*_HARDWARE_STRATEGY.md
+V*_OPTIMIZATION_STRATEGY.md
+V*_COMPLETE_FIX.md
+V*_SUCCESS_AND_NEXT_STEPS.md
+
+# Planning docs (kept locally, not in repo)
+NVFP4_*_PLAN.md
+TRTLLM_DEPLOYMENT_PLAN.md
+IMPLEMENTING_MMA_E2M1.md
+GB10_LEVERAGE_STRATEGY.md
+GB10_TENSOR_CORE_DISCOVERY.md
+PERFORMANCE_ROADMAP.md
+VICTORY_SUMMARY.md
+
+# Old version info files
+v*-original-build-info.txt
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo

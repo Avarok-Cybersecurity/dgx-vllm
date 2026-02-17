@@ -1,32 +1,22 @@
 FROM nvidia/cuda:13.0.2-cudnn-devel-ubuntu24.04
 
 # ============================================================================
-# vLLM Docker Image for DGX Spark GB10 - Version 72
+# vLLM Docker Image for DGX Spark GB10
 # ============================================================================
-# Production-ready vLLM with COMPLETE SM_121 support for GB10 Blackwell
-#
 # Features:
 # - vLLM latest from main (auto-updated at build time)
 # - PyTorch stable with CUDA 13.0 (ARM64 compatible)
-# - **Triton 3.6.0 (latest) - SM_121 FP4 support via PR #8498!**
-# - **COMPLETE CUDA FP4 Extension v1.0.0 - Official-style headers & API!**
-# - TORCH backend for SM_121 FP8 linear layers (torch._scaled_mm)
-# - TRITON backend for SM_121 FP8 MOE layers (bypasses CUTLASS entirely)
-# - GB10-optimized MoE config (+65.7% throughput vs default)
-# - **NVFP4 with tl.dot_scaled() - HARDWARE FP4 TENSOR CORES!**
-# - FlashInfer latest pre-release
-# - XGrammar latest stable
+# - Triton 3.6.0 with SM_121 support
+# - FlashInfer latest pre-release (patched for sm_121a)
+# - CUDA FP4 extension (custom headers + kernels for GB10)
+# - NVFP4 full compilation (software E2M1 for SM121, no stubs needed)
+# - GB10-optimized MoE Triton config (+65.7% throughput)
+# - SM_121 capability routing to SM_120 kernels
+# - CUTLASS FP8 disabled for SM_121 (PyTorch fallback)
+# - torch.compile disabled for NVFP4 (AutogradCUDA workaround)
 #
-# Build time: 30-60 minutes (kernel compilation)
-# Target: NVIDIA GB10 (sm_121)
-# v52-v62: Software emulation (3.64 tok/sec)
-# v63-v65: Various optimizations, still software emulation
-# v66-v68: tl.dot_scaled() but Triton 3.5.1 PassManager errors
-# v69: Triton upgrade attempt (failed - install order issue)
-# v70: FIXED Triton install order - Installs 3.6.0 AFTER vLLM (PassManager works!)
-# v71: FIXED kernel scale shapes - removed incorrect rhs_scale transpose
-# v72: COMPLETE CUDA FP4 Extension - Official headers + pre-compiled kernels!
-# Expected: 30-35 tok/sec (approaching FP8 performance) - HARDWARE TENSOR CORES!
+# Build time: 30-60 minutes
+# Target: NVIDIA GB10 (sm_121, Compute Capability 12.1)
 # ============================================================================
 
 # Install essentials, InfiniBand/RDMA libraries, and network utilities
@@ -57,6 +47,14 @@ RUN pip install xgrammar
 
 # Install flashinfer using --pre flag for pre-release versions
 RUN pip install flashinfer-python --pre
+
+# Pin PyTorch CUDA version - flashinfer and vLLM pip install pull torch from
+# PyPI (CPU-only). Setting extra-index-url ensures all subsequent pip installs
+# resolve torch from the cu130 index instead of defaulting to CPU.
+ENV PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cu130
+
+# Reinstall PyTorch CUDA after flashinfer (which just downgraded it)
+RUN pip install torch==2.10.0+cu130 torchvision==0.25.0+cu130 torchaudio==2.10.0+cu130
 
 # Clone vLLM
 RUN git clone https://github.com/vllm-project/vllm.git
@@ -99,10 +97,9 @@ RUN if [ -f CMakeLists.txt ]; then \
     sed -i 's/set(CUDA_SUPPORTED_ARCHS "7\.5;8\.0;8\.6;8\.7;8\.9;9\.0;10\.0;11\.0;12\.0")/set(CUDA_SUPPORTED_ARCHS "7.5;8.0;8.6;8.7;8.9;9.0;10.0;11.0;12.0;12.1")/g' CMakeLists.txt && \
     # Add 12.0f and 12.1f to SCALED_MM_ARCHS (SM100 kernels) - 3 instances \
     sed -i 's/cuda_archs_loose_intersection(SCALED_MM_ARCHS "10\.0f;11\.0f"/cuda_archs_loose_intersection(SCALED_MM_ARCHS "10.0f;11.0f;12.0f;12.1f"/g' CMakeLists.txt && \
-    # ENABLE FP4_ARCHS and NVFP4_ARCHS for SM_121 - We have __nv_fp4_e2m1! \
-    # Our complete FP4 implementation makes CUTLASS FP4 kernels work \
-    sed -i 's/cuda_archs_loose_intersection(FP4_ARCHS "12\.0[af]"/cuda_archs_loose_intersection(FP4_ARCHS "12.1f"/g' CMakeLists.txt && \
-    sed -i 's/cuda_archs_loose_intersection(NVFP4_ARCHS "12\.0[af]"/cuda_archs_loose_intersection(NVFP4_ARCHS "12.1f"/g' CMakeLists.txt && \
+    # NOTE: FP4_ARCHS for SM_120 is NOT modified - nvfp4_quant_kernels.cu uses \
+    # cvt.e2m1x2 instruction which doesn't exist on GB10 (sm_121). \
+    # Missing symbols (scaled_fp4_quant_sm1xxa etc) are handled by nvfp4_stubs.cu \
     # Add 12.1f to MLA_ARCHS (multi-head latent attention) \
     sed -i 's/cuda_archs_loose_intersection(MLA_ARCHS "10\.0f;11\.0f;12\.0f"/cuda_archs_loose_intersection(MLA_ARCHS "10.0f;11.0f;12.0f;12.1f"/g' CMakeLists.txt && \
     # Add 12.1f to CUTLASS_MOE_DATA_ARCHS (MoE data handling) \
@@ -142,49 +139,146 @@ RUN chmod +x /workspace/dgx-vllm-build/integrate_sm121_fp8_fix_v2.sh && \
     /workspace/dgx-vllm-build/integrate_sm121_fp8_fix_v2.sh
 
 # ============================================================================
-# Integrate Triton NVFP4 Backend for SM_121 (GB10) - TEMPORARILY DISABLED
+# v114 FIX 1: CMAKE - Force SM_120 Kernel Build for GB10 (CORRECTED!)
 # ============================================================================
-# DISABLED TO FIX BUILD: NVFP4 causing __nv_fp4_e2m1 errors
-# Will re-enable after vLLM builds successfully
-# Our custom CUDA FP4 extension is still included!
+# ROOT CAUSE (CORRECTED - found in v113 failure):
+#   Lines 532-536: CUDA version check determines arch list!
+#
+#   if CUDA >= 13.0:
+#     Line 533: cuda_archs_loose_intersection(SCALED_MM_ARCHS "12.0f" ...)
+#     → Only 12.0f! NOT 12.1f!
+#   else:
+#     Line 535: cuda_archs_loose_intersection(SCALED_MM_ARCHS "12.0a" ...)
+#
+#   We use CUDA 13.0.88 → Uses LINE 533 branch!
+#   v113 fixed line 535 → WRONG BRANCH! Still failed!
+#
+# Solution (v114 Fix 1 - CORRECTED):
+#   Fix LINE 533: "12.0f" → "12.0f;12.1f"  ← The branch we actually use!
+#   → CMake will build SM_120 kernels for GB10
+#   → ENABLE_SCALED_MM_SM120=1 will be defined
 # ============================================================================
-# COPY triton_nvfp4_scaled_mm.py /workspace/dgx-vllm-build/triton_nvfp4_scaled_mm.py
-# COPY nvfp4_scheme_sm121_patch.py /workspace/dgx-vllm-build/nvfp4_scheme_sm121_patch.py
-# COPY nvfp4_oracle_sm121_patch.py /workspace/dgx-vllm-build/nvfp4_oracle_sm121_patch.py
-# COPY integrate_sm121_nvfp4_triton.sh /workspace/dgx-vllm-build/integrate_sm121_nvfp4_triton.sh
-# RUN chmod +x /workspace/dgx-vllm-build/integrate_sm121_nvfp4_triton.sh && \
-#     /workspace/dgx-vllm-build/integrate_sm121_nvfp4_triton.sh
+COPY fix_cmake_sm120_archs_v113_corrected.sh /workspace/dgx-vllm-build/fix_cmake_sm120_archs_v113_corrected.sh
+RUN chmod +x /workspace/dgx-vllm-build/fix_cmake_sm120_archs_v113_corrected.sh && \
+    /workspace/dgx-vllm-build/fix_cmake_sm120_archs_v113_corrected.sh
 
 # ============================================================================
-# Integrate Complete CUDA FP4 Extension v1.0.0
+# v114 FIX 2: ROUTING - Capability 121 to SM_120
 # ============================================================================
-# Official-style CUDA headers and optimized kernels for FP4 quantization
-# - cuda_fp4.h: Professional FP4 API (matches cuda_fp16.h style)
-# - cuda_fp4_gemm.h: cuBLAS-style GEMM operations
-# - Pre-compiled kernels: 100% accuracy, production-ready
-# - Performance: 1.41x faster than FP32 on small matrices
-# - Memory: 2.34x compression measured on GB10
-# - Hardware-aware: Ready for tensor core acceleration (when NVIDIA updates)
-# - PyTorch integration: C++ extension framework included
-# - vLLM backend: Complete quantization backend ready
+# v112 Achievement:
+#   ✅ Modified routing code (line 199) to catch 121
+#   ❌ But code was never compiled (ENABLE_SCALED_MM_SM120 undefined)
 #
-# Achievement: FIRST COMPLETE FP4 SUPPORT FOR CUDA 13.1!
-# Built from scratch when NVIDIA didn't provide it - BOOM! 💥
+# v113 Achievement:
+#   ❌ Fixed wrong CMake branch (line 535 instead of 533)
+#   ❌ SM_120 kernels still not built
+#
+# Solution (v114 Fix 2):
+#   Same as v112 - modify routing to >= 120 && < 130
+#   BUT with v114 Fix 1 corrected, it will finally be compiled!
+#
+# Combined Result:
+#   Fix 1: SM_120 kernels built (correct branch!) → routing code exists
+#   Fix 2: Routing catches 121 → routes to SM_120 kernels
+#   SUCCESS!
+# ============================================================================
+COPY fix_capability_121_v112.py /workspace/dgx-vllm-build/fix_capability_121_v112.py
+RUN chmod +x /workspace/dgx-vllm-build/fix_capability_121_v112.py && \
+    python3 /workspace/dgx-vllm-build/fix_capability_121_v112.py /app/vllm
+
+# ============================================================================
+# v115 FIX 3: DISPATCHER FLAG - THE FINAL PIECE!
+# ============================================================================
+# ROOT CAUSE (discovered in v114 failure):
+#   scaled_mm_entry.cu (dispatcher) compiled WITHOUT ENABLE_SCALED_MM_SM120=1
+#   SM_120 kernels compiled WITH the flag
+#   Result: Kernels exist, but #ifdef evaluates to FALSE in dispatcher!
+#
+# v114 Evidence:
+#   - CMake: "Building scaled_mm_c3x_sm120 for archs: 12.1f" ✅
+#   - Kernels 47, 51, 55: SM_120 kernels compiled ✅
+#   - Runtime: "No compiled cutlass_scaled_mm for capability: 121" ❌
+#   - Extracted code shows: #ifdef ENABLE_SCALED_MM_SM120 block exists
+#   - But: #ifdef evaluates to FALSE → flag not defined for dispatcher!
+#
+# Solution (v115 Fix 3):
+#   Explicitly set ENABLE_SCALED_MM_SM120=1 for scaled_mm_entry.cu
+#   using set_source_files_properties() after SM_120 section
+#   → Ensures dispatcher knows about SM_120 kernels!
+#
+# Complete Fix Chain:
+#   Fix 1 (v114): Build SM_120 kernels → kernels exist
+#   Fix 2 (v112): Update routing code → routing logic correct
+#   Fix 3 (v115): Flag for dispatcher → #ifdef passes!
+#   RESULT: Capability 121 → routes to SM_120 kernels → SUCCESS!
+# ============================================================================
+COPY fix_dispatcher_flag_v115.sh /workspace/dgx-vllm-build/fix_dispatcher_flag_v115.sh
+RUN chmod +x /workspace/dgx-vllm-build/fix_dispatcher_flag_v115.sh && \
+    /workspace/dgx-vllm-build/fix_dispatcher_flag_v115.sh
+
+# ============================================================================
+# v126 FIX: Register cutlass_fp4_group_mm for Plain CUDA Dispatch (CORRECT FIX!)
+# NOTE: v126 CUDA dispatch fix (AutogradCUDA) was replaced by v134 (disable torch.compile for NVFP4)
+# v134 fix is applied AFTER pip install (see below)
+
+# ============================================================================
+# GB10 Native MoE Kernel v109 (GeForce Blackwell Optimized)
+# ============================================================================
+COPY grouped_mm_gb10_native_v109.cu /workspace/dgx-vllm-build/grouped_mm_gb10_native_v109.cu
+COPY integrate_gb10_native_v109.sh .
+RUN chmod +x integrate_gb10_native_v109.sh && ./integrate_gb10_native_v109.sh
+
+# ============================================================================
+# CUDA FP4 Extension - Custom headers and test binaries for GB10
 # ============================================================================
 COPY cutlass_nvfp4 /workspace/dgx-vllm-build/cutlass_nvfp4
 COPY integrate_cuda_fp4_extension.sh /workspace/dgx-vllm-build/integrate_cuda_fp4_extension.sh
 RUN chmod +x /workspace/dgx-vllm-build/integrate_cuda_fp4_extension.sh && \
     /workspace/dgx-vllm-build/integrate_cuda_fp4_extension.sh
 
+# FP4 tensor core env flags
+ENV ENABLE_TCGEN05_HARDWARE=1
+ENV NVCC_PREPEND_FLAGS="-DENABLE_TCGEN05_HARDWARE=1"
+
+# ============================================================================
+# GB10 Full NVFP4 Compilation v6 - ALL KERNELS (no stubs!)
+# ============================================================================
+# v6: Software E2M1 conversion in nvfp4_utils.cuh enables ALL quant kernels
+# to compile for SM121, eliminating the need for Python software fallback.
+#
+# Step 1: Patch nvfp4_utils.cuh with software E2M1 for SM121
+#   - Adds #if __CUDA_ARCH__ == 1210 guards around cvt.rn.satfinite.e2m1x2
+#   - Software implementation matches hardware round-to-nearest-even behavior
+#
+# Step 2: CMake patch to compile ALL kernel files for sm_121:
+#   - nvfp4_quant_kernels.cu (activation quant - uses software E2M1)
+#   - nvfp4_experts_quant.cu (per-expert quant - uses software E2M1)
+#   - activation_nvfp4_quant_fusion_kernels.cu (SiLU+Mul+quant)
+#   - nvfp4_blockwise_moe_kernel.cu (CUTLASS MoE GEMM - mma.e2m1)
+#   - nvfp4_scaled_mm_sm120_kernels.cu (CUTLASS FP4 GEMM - mma.e2m1)
+#
+# This eliminates:
+#   - Python software FP4 quant fallback (.item() calls = ~1 tok/s)
+#   - Quant function stubs (nvfp4_stubs.cu)
+#   - CUDA graph capture failure (cudaErrorStreamCaptureUnsupported)
+# ============================================================================
+COPY patch_nvfp4_utils_sw_e2m1.py /workspace/dgx-vllm-build/patch_nvfp4_utils_sw_e2m1.py
+RUN python3 /workspace/dgx-vllm-build/patch_nvfp4_utils_sw_e2m1.py
+
+COPY cmake_patch_gb10_nvfp4_v6_full_kernels.sh /workspace/dgx-vllm-build/cmake_patch_gb10_nvfp4_v6_full_kernels.sh
+RUN chmod +x /workspace/dgx-vllm-build/cmake_patch_gb10_nvfp4_v6_full_kernels.sh && \
+    /workspace/dgx-vllm-build/cmake_patch_gb10_nvfp4_v6_full_kernels.sh
+
 # ============================================================================
 # Build Configuration for GB10 Blackwell
 # ============================================================================
-# ONLY 12.1f (GB10) - Skip 12.0f to avoid CCCL FP4 intrinsic errors
-# CUDA 13.0 lacks FP4 intrinsics (__nv_cvt_fp4_*, etc.) for SM_120
-# Note: CUTLASS used for MoE, Triton used for scaled_mm on SM_121
+# Use 12.1a for architecture-specific features (tcgen05.mma FP4 tensor cores)
+# sm_121a enables Blackwell-specific PTX instructions including tcgen05
+# CUDA 13.0 PTX ISA 8.8 adds support for sm_121a target architecture
 # ============================================================================
-ENV TORCH_CUDA_ARCH_LIST="12.1f"
+ENV TORCH_CUDA_ARCH_LIST="12.1a"
 ENV TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas
+ENV NVCC_PREPEND_FLAGS="-arch=sm_121a ${NVCC_PREPEND_FLAGS}"
 ENV TIKTOKEN_ENCODINGS_BASE=/app/tiktoken_encodings
 
 # NCCL configuration for InfiniBand/RoCE multi-GPU
@@ -197,8 +291,30 @@ ENV NCCL_IB_GID_INDEX=0
 ENV NCCL_ASYNC_ERROR_HANDLING=1
 ENV TORCH_NCCL_BLOCKING_WAIT=1
 
+# ============================================================================
+# Native FP4 Tensor Cores: sm_121a compilation for tcgen05.mma
+# ============================================================================
+# CRITICAL: Use sm_121a (not sm_121) to enable architecture-specific instructions
+# - sm_121a unlocks tcgen05.mma.ss.kind::f8f6f4 (native FP4 tensor cores)
+# - Requires PTX ISA 8.8 (CUDA 13.0+) and GB10 hardware
+# - Expected: 4x compute throughput vs BF16, 2.5-3.5x total speedup
+# - Patched in integrate_optimized_kernel.sh via cmake/utils.cmake modification
+# ============================================================================
+
 # Install vLLM with local build (this takes a while)
-RUN pip install --no-build-isolation -e . -v --pre
+# Pin torch to cu130 via constraints to prevent pip from downgrading to CPU version.
+# Without this, vLLM's dependency resolution replaces torch+cu130 with torch (CPU).
+RUN echo "torch==2.10.0+cu130" > /tmp/constraints.txt && \
+    echo "torchvision==0.25.0+cu130" >> /tmp/constraints.txt && \
+    echo "torchaudio==2.10.0+cu130" >> /tmp/constraints.txt && \
+    PIP_CONSTRAINT=/tmp/constraints.txt pip install --no-build-isolation -e . -v --pre
+
+# Fix PyTorch CUDA: vLLM pip install pulls torch from PyPI (CPU-only) despite
+# PIP_EXTRA_INDEX_URL. Force reinstall cu130 version. The CUDA extensions were
+# already compiled against CUDA torch (from our pre-build install), so the .so
+# files are compatible - only the Python package metadata needs fixing.
+RUN pip install torch==2.10.0+cu130 torchvision==0.25.0+cu130 torchaudio==2.10.0+cu130 \
+    --index-url https://download.pytorch.org/whl/cu130 --force-reinstall --no-deps
 
 # ============================================================================
 # Patch FlashInfer Headers for FP4 JIT Compilation
@@ -211,17 +327,40 @@ COPY nv_fp4_dummy.h /workspace/dgx-vllm-build/nv_fp4_dummy.h
 RUN chmod +x /tmp/patch_flashinfer_fp4.sh && /tmp/patch_flashinfer_fp4.sh
 
 # ============================================================================
-# UPGRADE TO TRITON 3.6.0 - AFTER vLLM INSTALLATION
+# v134: Disable torch.compile for NVFP4 (MUST be AFTER pip install)
 # ============================================================================
-# CRITICAL: Install Triton 3.6.0 AFTER vLLM to override any version vLLM installed
-# This ensures we have the latest Triton with SM_121 support
-# Triton 3.6.0 includes:
-# - TMA gather4 support for SM_120 and SM_121 (PR #8498)
-# - Blackwell architecture support
-# - dot_scaled improvements for FP4/FP8
+COPY fix_disable_compilation_nvfp4_v134.py /workspace/dgx-vllm-build/fix_disable_compilation_nvfp4_v134.py
+RUN chmod +x /workspace/dgx-vllm-build/fix_disable_compilation_nvfp4_v134.py && \
+    python3 /workspace/dgx-vllm-build/fix_disable_compilation_nvfp4_v134.py
+
+# NOTE: Python software FP4 quantization (gb10_nvfp4_software_quant.py) is
+# NO LONGER NEEDED in v21. The C++ quant kernels now compile for SM121 with
+# software E2M1 conversion in nvfp4_utils.cuh. The compiled CUDA kernels
+# are CUDA-graph-capturable (no .item() calls, no GPU→CPU transfers).
+
 # ============================================================================
-COPY install-triton-latest.sh /tmp/
-RUN chmod +x /tmp/install-triton-latest.sh && /tmp/install-triton-latest.sh
+# Fix Qwen3Next doubled prefix in create_qkvz_proj (MUST be AFTER pip install)
+# ============================================================================
+# Bug: Both caller and create_qkvz_proj append '.in_proj_qkvz' to prefix,
+# creating 'model.layers.X.linear_attn.in_proj_qkvz.in_proj_qkvz' which
+# doesn't match the quantization ignore list, causing weight loading failures.
+# ============================================================================
+COPY fix_qwen3_next_prefix.py /workspace/dgx-vllm-build/fix_qwen3_next_prefix.py
+RUN python3 /workspace/dgx-vllm-build/fix_qwen3_next_prefix.py
+
+# ============================================================================
+# Fix NVFP4 EMULATION backend dequantization (MUST be AFTER pip install)
+# ============================================================================
+# Two bugs in run_nvfp4_emulations():
+# 1. Weight scales in LINEAR format but dequantize_to_dtype assumes swizzled
+# 2. weight_global_scale inverted (1/actual_gs) but code divides by it
+# Result: Garbled output from all NVFP4 models using EMULATION backend
+# ============================================================================
+COPY fix_nvfp4_emulation_backend.py /workspace/dgx-vllm-build/fix_nvfp4_emulation_backend.py
+RUN python3 /workspace/dgx-vllm-build/fix_nvfp4_emulation_backend.py
+
+# NOTE: Triton 3.6.0 is already installed by PyTorch cu130 wheel.
+# No separate install step needed (removed in v17 cleanup).
 
 # ============================================================================
 # Install GB10-Optimized MoE Configuration
@@ -251,35 +390,14 @@ WORKDIR /app/vllm
 EXPOSE 8888 6379
 
 # Version metadata
-LABEL version="72"
-LABEL build_date="2026-01-23"
-LABEL vllm_source="main-branch-latest-modified"
+LABEL version="21"
+LABEL build_date="2026-02-17"
+LABEL vllm_source="main-branch-latest-patched"
 LABEL pytorch_version="stable-cu130"
-LABEL sm121_backend="torch-scaled-mm-fallback"
-LABEL compute_capability="12.0f,12.1f"
-LABEL sm121_scaled_mm="triton-pure-backend"
-LABEL sm121_moe="triton-gb10-optimized"
-LABEL sm121_nvfp4="triton-optimized"
-LABEL nvfp4_linear="triton-fp4-kernel"
-LABEL nvfp4_moe="marlin-fallback-phase3-triton-planned"
-LABEL quantization_support="fp8-nvfp4-optimized"
+LABEL compute_capability="12.1a-gb10"
+LABEL quantization_support="fp8-nvfp4"
+LABEL sm121_fp8_backend="torch-scaled-mm-fallback"
 LABEL moe_config="gb10-custom-tuned"
-LABEL moe_improvement="+65.7%"
-LABEL nvfp4_improvement="2-5x-vs-marlin-expected"
-LABEL backend_selection="modified-before-compilation"
-LABEL cmake_fix="sm121-early-placement"
-LABEL kernel_fix="epilogue-dispatch-functions"
-LABEL linkage_fix="extern-c-no-duplicates"
-LABEL approach="vllm-source-modification"
-LABEL triton_fp4="custom-kernel-gb10-optimized"
-LABEL medium_article="nvfp4-triton-kernels-no-more-slow-marlin"
-LABEL cuda_fp4_extension="v1.0.0-official-api"
-LABEL cuda_fp4_headers="cuda_fp4.h-cuda_fp4_gemm.h"
-LABEL cuda_fp4_accuracy="100%-all-tests-passing"
-LABEL cuda_fp4_performance="1.41x-faster-small-matrices"
-LABEL cuda_fp4_compression="2.34x-measured"
-LABEL cuda_fp4_status="production-ready"
-LABEL achievement="first-complete-fp4-support-cuda-13.1"
 LABEL maintainer="avarok"
 
 # Healthcheck

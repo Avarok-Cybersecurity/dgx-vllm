@@ -124,7 +124,7 @@ uint64_t create_smem_desc(const void* smem_ptr, int leading_dim) {
 }
 
 /**
- * @brief Single tcgen05.mma operation (16×8×32 tile)
+ * @brief Single tcgen05.mma operation (16x8x32 tile)
  *
  * This is the CORE HARDWARE OPERATION!
  */
@@ -158,7 +158,7 @@ void tcgen05_mma_e2m1(
     //   .ss  = both operands from SMEM
     //   .kind::f8f6f4 = supports FP4/FP6/FP8 (selected by idesc)
     //
-    // Computes: D[16×8] = A[16×32] @ B[8×32] + C[16×8]
+    // Computes: D[16x8] = A[16x32] @ B[8x32] + C[16x8]
     // ====================================================================
 
     asm volatile(
