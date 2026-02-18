@@ -13,7 +13,7 @@ FROM nvidia/cuda:13.0.2-cudnn-devel-ubuntu24.04
 # - GB10-optimized MoE Triton config (+65.7% throughput)
 # - SM_121 capability routing to SM_120 kernels
 # - CUTLASS FP8 disabled for SM_121 (PyTorch fallback)
-# - torch.compile disabled for NVFP4 (AutogradCUDA workaround)
+# - torch.compile RE-ENABLED for NVFP4 (v22: Marlin backend bypasses AutogradCUDA issue)
 #
 # Build time: 30-60 minutes
 # Target: NVIDIA GB10 (sm_121, Compute Capability 12.1)
@@ -56,8 +56,9 @@ ENV PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cu130
 # Reinstall PyTorch CUDA after flashinfer (which just downgraded it)
 RUN pip install torch==2.10.0+cu130 torchvision==0.25.0+cu130 torchaudio==2.10.0+cu130
 
-# Clone vLLM
-RUN git clone https://github.com/vllm-project/vllm.git
+# Clone vLLM (pinned to known-good revision for reproducible builds)
+RUN git clone https://github.com/vllm-project/vllm.git && \
+    cd vllm && git checkout 3b30e6150777de549b11f67dde3ecc0d3b1f3f50
 WORKDIR /app/vllm
 
 # Prepare for existing torch
@@ -327,11 +328,13 @@ COPY nv_fp4_dummy.h /workspace/dgx-vllm-build/nv_fp4_dummy.h
 RUN chmod +x /tmp/patch_flashinfer_fp4.sh && /tmp/patch_flashinfer_fp4.sh
 
 # ============================================================================
-# v134: Disable torch.compile for NVFP4 (MUST be AFTER pip install)
+# v134: torch.compile for NVFP4 — REMOVED in v22
 # ============================================================================
-COPY fix_disable_compilation_nvfp4_v134.py /workspace/dgx-vllm-build/fix_disable_compilation_nvfp4_v134.py
-RUN chmod +x /workspace/dgx-vllm-build/fix_disable_compilation_nvfp4_v134.py && \
-    python3 /workspace/dgx-vllm-build/fix_disable_compilation_nvfp4_v134.py
+# Previously disabled torch.compile due to AutogradCUDA dispatch key error
+# on cutlass_fp4_group_mm. With Marlin backend (VLLM_TEST_FORCE_FP8_MARLIN=1),
+# CUTLASS FP4 GEMM ops are never called at runtime, so torch.compile should
+# work. If it crashes, fallback: add cutlass_fp4_group_mm to splitting_ops.
+# ============================================================================
 
 # NOTE: Python software FP4 quantization (gb10_nvfp4_software_quant.py) is
 # NO LONGER NEEDED in v21. The C++ quant kernels now compile for SM121 with
@@ -390,9 +393,9 @@ WORKDIR /app/vllm
 EXPOSE 8888 6379
 
 # Version metadata
-LABEL version="21"
-LABEL build_date="2026-02-17"
-LABEL vllm_source="main-branch-latest-patched"
+LABEL version="22"
+LABEL build_date="2026-02-18"
+LABEL vllm_source="3b30e6150-patched"
 LABEL pytorch_version="stable-cu130"
 LABEL compute_capability="12.1a-gb10"
 LABEL quantization_support="fp8-nvfp4"
