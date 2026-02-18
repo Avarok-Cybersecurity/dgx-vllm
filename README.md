@@ -2,6 +2,18 @@
 
 **59.9 tok/s** on Qwen3-Next-80B (NVFP4) — 54x faster than baseline, 2x faster than TensorRT-LLM.
 
+### NVFP4 is faster than AWQ
+
+The era of "just use AWQ INT4" is ending. On the same model, same hardware, same runtime — NVFP4 wins:
+
+| Quantization | Throughput | vs AWQ |
+|---|---|---|
+| AWQ INT4 (group=32, Marlin dequant) | 34.9 tok/s | baseline |
+| **NVFP4** (E2M1 + FP8 scales, Marlin dequant) | **40.2 tok/s** | **+15%** |
+| **NVFP4 + MTP speculative decoding** | **59.9 tok/s** | **+72%** |
+
+Both use Marlin W4A16 dequantization on the same vLLM v21 runtime. NVFP4's advantage comes from native FP4 tensor core format (no zero-points, simpler scale structure) and access to the model's built-in MTP draft head for speculative decoding. This image makes it work on GB10 — where the hardware FP4 convert instruction is missing.
+
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                     NVIDIA DGX Spark GB10                       │
@@ -121,6 +133,17 @@ curl -s http://localhost:8888/v1/chat/completions \
 | Theoretical ceiling (single-token) | — | ~46 tok/s | 273 GB/s bandwidth limit |
 
 Benchmarked on Qwen3-Next-80B-A3B-Instruct-NVFP4 (MoE, 512 experts, top-10 routing), single GB10 GPU, 200–500 token generations. MTP (Multi-Token Prediction) uses the model's built-in draft head to speculate future tokens, achieving ~1.84 accepted tokens per step (1 spec token) or ~2.42 tokens per step (2 spec tokens). This **exceeds the theoretical single-token memory-bandwidth ceiling** by generating multiple tokens per forward pass. Marlin dequantizes FP4 weights to FP16 at runtime, optimized for memory-bandwidth-bound batch=1 decode.
+
+### Optimization History
+
+| Commit | Improvement | Throughput | Spec Decode |
+|--------|------------|-----------|-------------|
+| `9e1cd69` | Software E2M1 + CUDA graphs | 35.0 tok/s | No |
+| `e9ff094` | + Marlin MoE backend (W4A16 dequant) | 39.5 tok/s | No |
+| `cf81980` | + Marlin dense GEMM | 40.2 tok/s | No |
+| `83e7f1d` | + MTP speculative decoding (2 tokens) | **59.9 tok/s** | Yes (MTP, 2 tokens) |
+
+See [OPTIMIZATIONS.md](OPTIMIZATIONS.md) for detailed analysis of each improvement and failed experiments.
 
 ---
 
