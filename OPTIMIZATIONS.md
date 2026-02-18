@@ -147,6 +147,9 @@ The theoretical single-token decode ceiling on GB10 is ~46 tok/s (273 GB/s bandw
 | FlashInfer cuDNN dense GEMM | 40.2 (same) | Same speed as Marlin dense |
 | CUTLASS dense GEMM | 39.9 (slightly worse) | Slightly slower than Marlin/cuDNN |
 | NGram spec-decode (TRT-LLM, 19 experiments) | 20.2 tok/s (WORSE) | 73% rejection rate, SSM state overhead |
+| MTP `num_speculative_tokens=3` | 58.9 tok/s (slightly worse) | 3rd position only 34% acceptance — not worth it |
+| MTP `parallel_drafting=true` | FAILED | Requires `ptd_token_id` in config.json (model lacks it) |
+| MTP + `--enable-prefix-caching` | FAILED | Prefix caching requires chunked prefill, incompatible with spec decode |
 
 ---
 
