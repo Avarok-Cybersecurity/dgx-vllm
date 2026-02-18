@@ -1,6 +1,6 @@
 # dgx-vllm: NVFP4 Inference on NVIDIA DGX Spark GB10
 
-**40.2 tok/s** on Qwen3-Next-80B (NVFP4) — 37x faster than baseline, 36% faster than TensorRT-LLM.
+**59.9 tok/s** on Qwen3-Next-80B (NVFP4) — 54x faster than baseline, 2x faster than TensorRT-LLM.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -52,7 +52,7 @@ This image bridges the gap between GB10's hardware FP4 tensor cores and vLLM's i
 
 GB10 has FP4 tensor cores for matrix multiplication, but is **missing the hardware instruction** (`cvt.rn.satfinite.e2m1x2.f32`) that converts activations from float32 to E2M1 format. Without this instruction, CUDA refuses to compile the quantization kernels, forcing a Python software fallback that runs at 1.1 tok/s.
 
-Our fix: a 15-line C++ device function that performs the conversion in software, guarded by `#if __CUDA_ARCH__ == 1210`. This compiles all 5 NVFP4 kernels natively, enables CUDA graph capture (54 graphs), and delivers 40.2 tok/s with the Marlin backend for both dense and MoE GEMM.
+Our fix: a 15-line C++ device function that performs the conversion in software, guarded by `#if __CUDA_ARCH__ == 1210`. This compiles all 5 NVFP4 kernels natively, enables CUDA graph capture (54 graphs), and delivers 59.9 tok/s with Marlin GEMM + MTP speculative decoding (84% draft acceptance rate).
 
 ---
 
@@ -66,12 +66,20 @@ docker pull avarok/dgx-vllm-nvfp4-kernel:v21
 docker run -d --name vllm-nvfp4 \
   --network host --gpus all --ipc=host \
   -v $HOME/.cache/huggingface:/root/.cache/huggingface \
+  -v /path/to/fix_mtp_nvfp4_exclusion.py:/tmp/fix_mtp_nvfp4_exclusion.py:ro \
   -e VLLM_TEST_FORCE_FP8_MARLIN=1 \
   -e VLLM_NVFP4_GEMM_BACKEND=marlin \
   -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
-  -e MODEL=GadflyII/Qwen3-Coder-Next-NVFP4 \
-  -e PORT=8888 -e GPU_MEMORY_UTIL=0.90 \
-  avarok/dgx-vllm-nvfp4-kernel:v21 serve
+  --entrypoint bash \
+  avarok/dgx-vllm-nvfp4-kernel:v21 -c '
+python3 /tmp/fix_mtp_nvfp4_exclusion.py && \
+vllm serve nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4 \
+  --host 0.0.0.0 --port 8888 \
+  --max-model-len 4096 --gpu-memory-utilization 0.90 \
+  --max-num-seqs 128 --attention-backend flashinfer \
+  --kv-cache-dtype fp8 --no-enable-chunked-prefill \
+  --speculative-config "{\"method\":\"mtp\",\"num_speculative_tokens\":2}"
+'
 ```
 
 ### Build Locally
@@ -107,10 +115,12 @@ curl -s http://localhost:8888/v1/chat/completions \
 | vLLM v21 + CUDA graphs | CUTLASS | 35.0 tok/s | Software E2M1 + torch.compile |
 | vLLM v21 + CUDA graphs | CUTLASS | 36.4 tok/s | + expandable_segments, 0.90 util |
 | vLLM v21 + CUDA graphs | Marlin MoE | 39.5 tok/s | + Marlin MoE (W4A16 dequant) |
-| **vLLM v21 + CUDA graphs** | **Marlin (all)** | **40.2 tok/s** | **Marlin for dense + MoE GEMM** |
-| Theoretical ceiling | — | ~46 tok/s | 273 GB/s bandwidth limit |
+| vLLM v21 + CUDA graphs | Marlin (all) | 40.2 tok/s | Marlin for dense + MoE GEMM |
+| vLLM v21 + MTP (1 token) | Marlin (all) | 55.4 tok/s | + MTP speculative decoding (84% accept) |
+| **vLLM v21 + MTP (2 tokens)** | **Marlin (all)** | **59.9 tok/s** | **MTP with 2 spec tokens (84%/53% accept)** |
+| Theoretical ceiling (single-token) | — | ~46 tok/s | 273 GB/s bandwidth limit |
 
-Benchmarked on Qwen3-Next-80B-A3B-Instruct-NVFP4 (MoE, 512 experts, top-10 routing), single GB10 GPU, 200–500 token generations. Marlin dequantizes FP4 weights to FP16 at runtime — optimized for memory-bandwidth-bound batch=1 decode. Using Marlin for both dense (attention projections) and MoE GEMM gives an additional ~2% over MoE-only Marlin.
+Benchmarked on Qwen3-Next-80B-A3B-Instruct-NVFP4 (MoE, 512 experts, top-10 routing), single GB10 GPU, 200–500 token generations. MTP (Multi-Token Prediction) uses the model's built-in draft head to speculate future tokens, achieving ~1.84 accepted tokens per step (1 spec token) or ~2.42 tokens per step (2 spec tokens). This **exceeds the theoretical single-token memory-bandwidth ceiling** by generating multiple tokens per forward pass. Marlin dequantizes FP4 weights to FP16 at runtime, optimized for memory-bandwidth-bound batch=1 decode.
 
 ---
 
@@ -215,6 +225,7 @@ Applied after `pip install -e .` to fix runtime issues:
 | `fix_cmake_sm120_archs_v113_corrected.sh` | Wrong CMake branch for CUDA 13.0+ | Fix line 533 (not 535) to include `12.1f` |
 | `fix_flashinfer_e2m1_sm121.py` | FlashInfer JIT fails on SM121 (E2M1 convert) | Software E2M1 for FlashInfer runtime compilation |
 | `fix_flashinfer_nvfp4_moe_backend.py` | FlashInfer MoE backend returns None for experts_cls | Return `k_cls` instead of `None` |
+| `fix_mtp_nvfp4_exclusion.py` | MTP layers not excluded from NVFP4 quantization | Exclude all `mtp.*` layers when exclude list targets MTP |
 
 ### Layer 6: vLLM V1 Engine
 
@@ -222,10 +233,11 @@ Runtime configuration for NVFP4 inference:
 
 | Feature | Status | Notes |
 |---------|--------|-------|
+| **MTP Spec Decode** | **Enabled (2 tokens)** | **+49% throughput (40.2→59.9), 84%/53% accept rate** |
 | CUDA Graphs | 54 captured (35 piecewise + 19 full decode) | +64% throughput (22→36 tok/s) |
 | torch.compile | Active (mode=VLLM_COMPILE) | vLLM Inductor backend, ~1% gain |
 | FlashInfer Attention | Enabled | SM120 native attention kernels |
-| Chunked Prefill | Enabled (2048 tokens) | Reduces time-to-first-token |
+| Chunked Prefill | Disabled (required for spec decode) | Must use `--no-enable-chunked-prefill` with MTP |
 | Prefix Caching | Supported | Via `--enable-prefix-caching` |
 | MoE Backend | **Marlin** (recommended) or CUTLASS | Marlin: W4A16 dequant, +13% over CUTLASS |
 
@@ -270,7 +282,32 @@ docker run ... dgx-vllm:v21 ray-worker   # Start Ray worker node
 docker run ... dgx-vllm:v21 bash         # Interactive shell
 ```
 
-### Recommended Launch (Qwen3-Coder NVFP4)
+### Recommended Launch with MTP Speculative Decoding (~60 tok/s)
+
+```bash
+docker run -d --name vllm-nvfp4 \
+  --network host --gpus all --ipc=host \
+  -v $HOME/.cache/huggingface:/root/.cache/huggingface \
+  -v /path/to/fix_mtp_nvfp4_exclusion.py:/tmp/fix_mtp_nvfp4_exclusion.py:ro \
+  -e VLLM_USE_FLASHINFER_MOE_FP4=0 \
+  -e VLLM_TEST_FORCE_FP8_MARLIN=1 \
+  -e VLLM_NVFP4_GEMM_BACKEND=marlin \
+  -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+  --entrypoint bash \
+  avarok/dgx-vllm-nvfp4-kernel:v21 -c '
+python3 /tmp/fix_mtp_nvfp4_exclusion.py && \
+vllm serve nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4 \
+  --host 0.0.0.0 --port 8888 \
+  --max-model-len 4096 --gpu-memory-utilization 0.90 \
+  --max-num-seqs 128 --attention-backend flashinfer \
+  --kv-cache-dtype fp8 --no-enable-chunked-prefill \
+  --speculative-config "{\"method\":\"mtp\",\"num_speculative_tokens\":2}"
+'
+```
+
+**Note:** MTP requires `fix_mtp_nvfp4_exclusion.py` to patch a bug where MTP layers are incorrectly quantized to NVFP4. The patch excludes all `mtp.*` layers from quantization since they are stored as BF16 in the checkpoint. Chunked prefill must be disabled for speculative decoding.
+
+### Launch without MTP (~40 tok/s)
 
 ```bash
 docker run -d --name vllm-nvfp4 \
@@ -280,11 +317,10 @@ docker run -d --name vllm-nvfp4 \
   -e VLLM_TEST_FORCE_FP8_MARLIN=1 \
   -e VLLM_NVFP4_GEMM_BACKEND=marlin \
   -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
-  -e MODEL=GadflyII/Qwen3-Coder-Next-NVFP4 \
+  -e MODEL=nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4 \
   -e PORT=8888 -e GPU_MEMORY_UTIL=0.90 \
-  -e MAX_MODEL_LEN=131072 -e MAX_NUM_SEQS=128 \
-  -e VLLM_EXTRA_ARGS="--enable-auto-tool-choice --tool-call-parser qwen3_coder \
-    --attention-backend flashinfer --enable-prefix-caching --kv-cache-dtype fp8" \
+  -e MAX_MODEL_LEN=4096 -e MAX_NUM_SEQS=128 \
+  -e VLLM_EXTRA_ARGS="--attention-backend flashinfer --kv-cache-dtype fp8" \
   avarok/dgx-vllm-nvfp4-kernel:v21 serve
 ```
 
@@ -335,6 +371,7 @@ docker run -d --name vllm-nvfp4 \
 | `fix_dispatcher_flag_v115.sh` | Enable SM120 flag in dispatcher |
 | `fix_flashinfer_e2m1_sm121.py` | FlashInfer SM121 JIT E2M1 patches |
 | `fix_flashinfer_nvfp4_moe_backend.py` | FlashInfer MoE backend return fix |
+| `fix_mtp_nvfp4_exclusion.py` | Exclude all MTP layers from NVFP4 quantization |
 
 ### Runtime Configuration
 
@@ -358,7 +395,9 @@ docker run -d --name vllm-nvfp4 \
 | v21 | Software E2M1 in C++ + CUDA graphs | 35.0 tok/s |
 | v21+FlashInfer | FlashInfer SM121 JIT patches + MoE backend fix | 35.0 tok/s (FlashInfer fused MoE: garbled) |
 | v21+Marlin MoE | Marlin MoE backend (W4A16 dequant) + expandable_segments | 39.5 tok/s |
-| **v21+Marlin (all)** | **Marlin for both dense + MoE GEMM** | **40.2 tok/s** |
+| v21+Marlin (all) | Marlin for both dense + MoE GEMM | 40.2 tok/s |
+| v21+MTP (1 token) | MTP speculative decoding (84% accept) | 55.4 tok/s |
+| **v21+MTP (2 tokens)** | **MTP with 2 speculative tokens (84%/53% accept)** | **59.9 tok/s** |
 
 ---
 
