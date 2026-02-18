@@ -1,6 +1,6 @@
 # dgx-vllm: NVFP4 Inference on NVIDIA DGX Spark GB10
 
-**35 tok/s** on Qwen3-Next-80B (NVFP4) — 32x faster than baseline, 18% faster than TensorRT-LLM.
+**39.5 tok/s** on Qwen3-Next-80B (NVFP4) — 36x faster than baseline, 33% faster than TensorRT-LLM.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -28,9 +28,9 @@ This image bridges the gap between GB10's hardware FP4 tensor cores and vLLM's i
  Layer 6 ─ vLLM V1      Inference engine: CUDA graphs, chunked prefill,
            │             FlashInfer attention, MoE routing
            │
- Layer 5 ─ Patches      torch.compile disabled for NVFP4 (AutogradCUDA)
-           │             Qwen3Next prefix fix, EMULATION backend fix
+ Layer 5 ─ Patches      Qwen3Next prefix fix, EMULATION backend fix
            │             Capability 121 → SM_120 kernel routing
+           │             FlashInfer SM121 JIT patches
            │
  Layer 4 ─ CUTLASS      FP4 MoE GEMM (BlockScaled, Cooperative, 4 tiles)
            │             FP4 scaled_mm, FP8 scaled_mm (SM120 kernels)
@@ -52,7 +52,7 @@ This image bridges the gap between GB10's hardware FP4 tensor cores and vLLM's i
 
 GB10 has FP4 tensor cores for matrix multiplication, but is **missing the hardware instruction** (`cvt.rn.satfinite.e2m1x2.f32`) that converts activations from float32 to E2M1 format. Without this instruction, CUDA refuses to compile the quantization kernels, forcing a Python software fallback that runs at 1.1 tok/s.
 
-Our fix: a 15-line C++ device function that performs the conversion in software, guarded by `#if __CUDA_ARCH__ == 1210`. This compiles all 5 NVFP4 kernels natively, enables CUDA graph capture (54 graphs), and delivers 35 tok/s.
+Our fix: a 15-line C++ device function that performs the conversion in software, guarded by `#if __CUDA_ARCH__ == 1210`. This compiles all 5 NVFP4 kernels natively, enables CUDA graph capture (54 graphs), and delivers 39.5 tok/s with the Marlin MoE backend.
 
 ---
 
@@ -66,8 +66,10 @@ docker pull avarok/dgx-vllm-nvfp4-kernel:v21
 docker run -d --name vllm-nvfp4 \
   --network host --gpus all --ipc=host \
   -v $HOME/.cache/huggingface:/root/.cache/huggingface \
+  -e VLLM_TEST_FORCE_FP8_MARLIN=1 \
+  -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
   -e MODEL=GadflyII/Qwen3-Coder-Next-NVFP4 \
-  -e PORT=8888 -e GPU_MEMORY_UTIL=0.8 \
+  -e PORT=8888 -e GPU_MEMORY_UTIL=0.90 \
   avarok/dgx-vllm-nvfp4-kernel:v21 serve
 ```
 
@@ -96,14 +98,17 @@ curl -s http://localhost:8888/v1/chat/completions \
 
 ## Performance
 
-| Framework | Throughput | Notes |
-|-----------|-----------|-------|
-| vLLM v20 (Python FP4 fallback) | 1.1 tok/s | `.item()` calls block CUDA graphs |
-| TensorRT-LLM v1.3.0rc2 | 29.6 tok/s | NVIDIA's optimized runtime |
-| **vLLM v21 (this image)** | **35.0 tok/s** | **Software E2M1 + CUDA graphs** |
-| Theoretical ceiling | ~46 tok/s | 273 GB/s bandwidth limit |
+| Framework | Backend | Throughput | Notes |
+|-----------|---------|-----------|-------|
+| vLLM v20 (Python FP4 fallback) | — | 1.1 tok/s | `.item()` calls block CUDA graphs |
+| vLLM v21 (eager, no CUDA graphs) | CUTLASS | 22 tok/s | Baseline without compilation |
+| TensorRT-LLM v1.3.0rc2 | CUTLASS | 29.6 tok/s | NVIDIA's optimized runtime |
+| vLLM v21 + CUDA graphs | CUTLASS | 35.0 tok/s | Software E2M1 + torch.compile |
+| vLLM v21 + CUDA graphs | CUTLASS | 36.4 tok/s | + expandable_segments, 0.90 util |
+| **vLLM v21 + CUDA graphs** | **Marlin** | **39.5 tok/s** | **+ Marlin MoE (W4A16 dequant)** |
+| Theoretical ceiling | — | ~46 tok/s | 273 GB/s bandwidth limit |
 
-Benchmarked on Qwen3-Next-80B-A3B-Instruct-NVFP4 (MoE, 512 experts, top-10 routing), single GB10 GPU, 200-token generations.
+Benchmarked on Qwen3-Next-80B-A3B-Instruct-NVFP4 (MoE, 512 experts, top-10 routing), single GB10 GPU, 200-token generations. Marlin dequantizes FP4 weights to FP16 at runtime — optimized for memory-bandwidth-bound batch=1 decode.
 
 ---
 
@@ -201,12 +206,13 @@ Applied after `pip install -e .` to fix runtime issues:
 
 | Patch | Problem | Fix |
 |-------|---------|-----|
-| `fix_disable_compilation_nvfp4_v134.py` | `torch.compile` crashes with `AutogradCUDA` on SM121 for NVFP4 | Disable torch.compile for NVFP4 quantized layers |
 | `fix_qwen3_next_prefix.py` | Doubled `.in_proj_qkvz` prefix breaks weight loading | Remove duplicate prefix append in `create_qkvz_proj` |
 | `fix_nvfp4_emulation_backend.py` | EMULATION backend produces garbled output | Fix scale format (LINEAR not swizzled) and global_scale inversion |
 | `fix_capability_121_v112.py` | Capability 121 not routed to SM120 kernels | Route `>= 120 && < 130` to SM120 codepath |
 | `fix_dispatcher_flag_v115.sh` | `ENABLE_SCALED_MM_SM120` undefined in dispatcher | Set compile definition for `scaled_mm_entry.cu` |
 | `fix_cmake_sm120_archs_v113_corrected.sh` | Wrong CMake branch for CUDA 13.0+ | Fix line 533 (not 535) to include `12.1f` |
+| `fix_flashinfer_e2m1_sm121.py` | FlashInfer JIT fails on SM121 (E2M1 convert) | Software E2M1 for FlashInfer runtime compilation |
+| `fix_flashinfer_nvfp4_moe_backend.py` | FlashInfer MoE backend returns None for experts_cls | Return `k_cls` instead of `None` |
 
 ### Layer 6: vLLM V1 Engine
 
@@ -214,12 +220,12 @@ Runtime configuration for NVFP4 inference:
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| CUDA Graphs | 54 captured (35 piecewise + 19 full decode) | Enabled by eliminating `.item()` calls |
-| torch.compile | Disabled for NVFP4 layers | SM121 AutogradCUDA incompatibility |
+| CUDA Graphs | 54 captured (35 piecewise + 19 full decode) | +64% throughput (22→36 tok/s) |
+| torch.compile | Active (mode=VLLM_COMPILE) | vLLM Inductor backend, ~1% gain |
 | FlashInfer Attention | Enabled | SM120 native attention kernels |
 | Chunked Prefill | Enabled (2048 tokens) | Reduces time-to-first-token |
 | Prefix Caching | Supported | Via `--enable-prefix-caching` |
-| MoE Backend | CUTLASS | Only viable backend on SM121 |
+| MoE Backend | **Marlin** (recommended) or CUTLASS | Marlin: W4A16 dequant, +13% over CUTLASS |
 
 ### Layer 7: Model
 
@@ -248,7 +254,9 @@ Runtime configuration for NVFP4 inference:
 | `MAX_NUM_SEQS` | 128 | Maximum concurrent sequences |
 | `TENSOR_PARALLEL_SIZE` | 1 | Number of GPUs |
 | `VLLM_EXTRA_ARGS` | "" | Additional vLLM CLI arguments |
-| `VLLM_USE_FLASHINFER_MOE_FP4` | 0 | Use FlashInfer MoE (set 0 for CUTLASS) |
+| `VLLM_USE_FLASHINFER_MOE_FP4` | 0 | Use FlashInfer MoE (set 0 for CUTLASS/Marlin) |
+| `VLLM_TEST_FORCE_FP8_MARLIN` | 0 | Force Marlin MoE backend (+13% throughput) |
+| `PYTORCH_CUDA_ALLOC_CONF` | (unset) | Set `expandable_segments:True` to reduce fragmentation |
 
 ### Container Modes
 
@@ -266,8 +274,10 @@ docker run -d --name vllm-nvfp4 \
   --network host --gpus all --ipc=host \
   -v $HOME/.cache/huggingface:/root/.cache/huggingface \
   -e VLLM_USE_FLASHINFER_MOE_FP4=0 \
+  -e VLLM_TEST_FORCE_FP8_MARLIN=1 \
+  -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
   -e MODEL=GadflyII/Qwen3-Coder-Next-NVFP4 \
-  -e PORT=8888 -e GPU_MEMORY_UTIL=0.8 \
+  -e PORT=8888 -e GPU_MEMORY_UTIL=0.90 \
   -e MAX_MODEL_LEN=131072 -e MAX_NUM_SEQS=128 \
   -e VLLM_EXTRA_ARGS="--enable-auto-tool-choice --tool-call-parser qwen3_coder \
     --attention-backend flashinfer --enable-prefix-caching --kv-cache-dtype fp8" \
@@ -314,12 +324,13 @@ docker run -d --name vllm-nvfp4 \
 
 | File | Purpose |
 |------|---------|
-| `fix_disable_compilation_nvfp4_v134.py` | Disable torch.compile for NVFP4 |
 | `fix_qwen3_next_prefix.py` | Fix Qwen3Next weight loading prefix |
 | `fix_nvfp4_emulation_backend.py` | Fix EMULATION backend dequantization |
 | `fix_capability_121_v112.py` | Route CC 121 → SM120 kernels |
 | `fix_cmake_sm120_archs_v113_corrected.sh` | CMake arch list fix for CUDA 13.0+ |
 | `fix_dispatcher_flag_v115.sh` | Enable SM120 flag in dispatcher |
+| `fix_flashinfer_e2m1_sm121.py` | FlashInfer SM121 JIT E2M1 patches |
+| `fix_flashinfer_nvfp4_moe_backend.py` | FlashInfer MoE backend return fix |
 
 ### Runtime Configuration
 
@@ -338,9 +349,11 @@ docker run -d --name vllm-nvfp4 \
 | v109 | GB10 native grouped GEMM kernel | — |
 | v112–v115 | Capability 121 routing (3-part fix chain) | — |
 | v118 | Meta backend for torch.compile | — |
-| v134 | Disable torch.compile for NVFP4 | — |
+| v134 | Disable torch.compile for NVFP4 (no-op, see below) | — |
 | v20 | Python software FP4 quant (Qwen3-80B NVFP4) | 1.1 tok/s |
-| **v21** | **Software E2M1 in C++ + CUDA graphs** | **35.0 tok/s** |
+| v21 | Software E2M1 in C++ + CUDA graphs | 35.0 tok/s |
+| v21+FlashInfer | FlashInfer SM121 JIT patches + MoE backend fix | 35.0 tok/s (FlashInfer fused MoE: garbled) |
+| **v21+Marlin** | **Marlin MoE backend (W4A16 dequant) + expandable_segments** | **39.5 tok/s** |
 
 ---
 
