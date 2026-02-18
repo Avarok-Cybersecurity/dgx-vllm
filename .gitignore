@@ -1,5 +1,6 @@
 # Build logs
 build-v*.log
+build_v*.log
 *-build.log
 *.log.bak
 
@@ -47,6 +48,35 @@ VICTORY_SUMMARY.md
 
 # Old version info files
 v*-original-build-info.txt
+
+# Old versioned build/patch scripts (v111-v133 iterations)
+*_v1[0-3]*.py
+*_v1[0-3]*.sh
+find_and_patch_*.py
+patch_python_*.py
+patch_inference_*.py
+register_cuda_*.py
+deploy_v*.sh
+apply_meta_*.sh
+disable_gb10_*.sh
+cmake_patch_*.sh
+integrate_optimized_*.sh
+patch_flashinfer_arch.sh
+
+# Old CUDA stub files
+nvfp4_*_stub*.cu
+nvfp4_stubs*.cu
+nvfp4_blockwise_moe_kernel_original.cu
+
+# Old CUTLASS kernel experiments
+cutlass_nvfp4/
+
+# Old documentation
+BENCHMARKS.md
+BUILD_HISTORY_SUMMARY.md
+DEPLOYMENT_CHECKLIST.md
+OPTIMIZATIONS.md
+V14_*.md
 
 # Python cache
 __pycache__/
