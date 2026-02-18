@@ -1,6 +1,6 @@
 # dgx-vllm: NVFP4 Inference on NVIDIA DGX Spark GB10
 
-**39.5 tok/s** on Qwen3-Next-80B (NVFP4) — 36x faster than baseline, 33% faster than TensorRT-LLM.
+**40.2 tok/s** on Qwen3-Next-80B (NVFP4) — 37x faster than baseline, 36% faster than TensorRT-LLM.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -52,7 +52,7 @@ This image bridges the gap between GB10's hardware FP4 tensor cores and vLLM's i
 
 GB10 has FP4 tensor cores for matrix multiplication, but is **missing the hardware instruction** (`cvt.rn.satfinite.e2m1x2.f32`) that converts activations from float32 to E2M1 format. Without this instruction, CUDA refuses to compile the quantization kernels, forcing a Python software fallback that runs at 1.1 tok/s.
 
-Our fix: a 15-line C++ device function that performs the conversion in software, guarded by `#if __CUDA_ARCH__ == 1210`. This compiles all 5 NVFP4 kernels natively, enables CUDA graph capture (54 graphs), and delivers 39.5 tok/s with the Marlin MoE backend.
+Our fix: a 15-line C++ device function that performs the conversion in software, guarded by `#if __CUDA_ARCH__ == 1210`. This compiles all 5 NVFP4 kernels natively, enables CUDA graph capture (54 graphs), and delivers 40.2 tok/s with the Marlin backend for both dense and MoE GEMM.
 
 ---
 
@@ -67,6 +67,7 @@ docker run -d --name vllm-nvfp4 \
   --network host --gpus all --ipc=host \
   -v $HOME/.cache/huggingface:/root/.cache/huggingface \
   -e VLLM_TEST_FORCE_FP8_MARLIN=1 \
+  -e VLLM_NVFP4_GEMM_BACKEND=marlin \
   -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
   -e MODEL=GadflyII/Qwen3-Coder-Next-NVFP4 \
   -e PORT=8888 -e GPU_MEMORY_UTIL=0.90 \
@@ -105,10 +106,11 @@ curl -s http://localhost:8888/v1/chat/completions \
 | TensorRT-LLM v1.3.0rc2 | CUTLASS | 29.6 tok/s | NVIDIA's optimized runtime |
 | vLLM v21 + CUDA graphs | CUTLASS | 35.0 tok/s | Software E2M1 + torch.compile |
 | vLLM v21 + CUDA graphs | CUTLASS | 36.4 tok/s | + expandable_segments, 0.90 util |
-| **vLLM v21 + CUDA graphs** | **Marlin** | **39.5 tok/s** | **+ Marlin MoE (W4A16 dequant)** |
+| vLLM v21 + CUDA graphs | Marlin MoE | 39.5 tok/s | + Marlin MoE (W4A16 dequant) |
+| **vLLM v21 + CUDA graphs** | **Marlin (all)** | **40.2 tok/s** | **Marlin for dense + MoE GEMM** |
 | Theoretical ceiling | — | ~46 tok/s | 273 GB/s bandwidth limit |
 
-Benchmarked on Qwen3-Next-80B-A3B-Instruct-NVFP4 (MoE, 512 experts, top-10 routing), single GB10 GPU, 200-token generations. Marlin dequantizes FP4 weights to FP16 at runtime — optimized for memory-bandwidth-bound batch=1 decode.
+Benchmarked on Qwen3-Next-80B-A3B-Instruct-NVFP4 (MoE, 512 experts, top-10 routing), single GB10 GPU, 200–500 token generations. Marlin dequantizes FP4 weights to FP16 at runtime — optimized for memory-bandwidth-bound batch=1 decode. Using Marlin for both dense (attention projections) and MoE GEMM gives an additional ~2% over MoE-only Marlin.
 
 ---
 
@@ -256,6 +258,7 @@ Runtime configuration for NVFP4 inference:
 | `VLLM_EXTRA_ARGS` | "" | Additional vLLM CLI arguments |
 | `VLLM_USE_FLASHINFER_MOE_FP4` | 0 | Use FlashInfer MoE (set 0 for CUTLASS/Marlin) |
 | `VLLM_TEST_FORCE_FP8_MARLIN` | 0 | Force Marlin MoE backend (+13% throughput) |
+| `VLLM_NVFP4_GEMM_BACKEND` | (auto) | Set `marlin` for Marlin dense GEMM (+2% over FlashInfer CUTLASS) |
 | `PYTORCH_CUDA_ALLOC_CONF` | (unset) | Set `expandable_segments:True` to reduce fragmentation |
 
 ### Container Modes
@@ -275,6 +278,7 @@ docker run -d --name vllm-nvfp4 \
   -v $HOME/.cache/huggingface:/root/.cache/huggingface \
   -e VLLM_USE_FLASHINFER_MOE_FP4=0 \
   -e VLLM_TEST_FORCE_FP8_MARLIN=1 \
+  -e VLLM_NVFP4_GEMM_BACKEND=marlin \
   -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
   -e MODEL=GadflyII/Qwen3-Coder-Next-NVFP4 \
   -e PORT=8888 -e GPU_MEMORY_UTIL=0.90 \
@@ -353,7 +357,8 @@ docker run -d --name vllm-nvfp4 \
 | v20 | Python software FP4 quant (Qwen3-80B NVFP4) | 1.1 tok/s |
 | v21 | Software E2M1 in C++ + CUDA graphs | 35.0 tok/s |
 | v21+FlashInfer | FlashInfer SM121 JIT patches + MoE backend fix | 35.0 tok/s (FlashInfer fused MoE: garbled) |
-| **v21+Marlin** | **Marlin MoE backend (W4A16 dequant) + expandable_segments** | **39.5 tok/s** |
+| v21+Marlin MoE | Marlin MoE backend (W4A16 dequant) + expandable_segments | 39.5 tok/s |
+| **v21+Marlin (all)** | **Marlin for both dense + MoE GEMM** | **40.2 tok/s** |
 
 ---
 
