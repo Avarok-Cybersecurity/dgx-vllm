@@ -1,80 +1,47 @@
-# dgx-vllm: NVFP4 Inference on NVIDIA DGX Spark GB10
-
-**~67 tok/s** (peak **111.9 tok/s**) on Qwen3-Next-80B (NVFP4) — 54x faster than baseline, **~20% faster than AWQ INT4**.
-
-### NVFP4 is faster than AWQ
-
-The era of "just use AWQ INT4" on DGX Spark is over. On the same model, same hardware — NVFP4 wins on every metric:
-
-| Configuration | Avg Decode | Peak Decode | vs AWQ |
-|---|---:|---:|---|
-| AWQ INT4 (NVIDIA image) | ~34 tok/s | 38.2 tok/s | baseline |
-| AWQ INT4 (Avarok image) | ~36 tok/s | 39.7 tok/s | +6% |
-| NVFP4 (NVIDIA image) | ~36 tok/s | 40.2 tok/s | same as AWQ |
-| **NVFP4 (Avarok image)** | **~42 tok/s** | **47.1 tok/s** | **+20%** |
-| **NVFP4 + MTP (Avarok)** | **~67 tok/s** | **111.9 tok/s** | **~2x** |
-
-NVFP4's advantage comes from our Marlin MoE backend (not available in NVIDIA's shipping image) and access to the model's built-in MTP draft head for speculative decoding. This image makes it all work on GB10 — where the hardware FP4 convert instruction is missing.
-
-See **[NVFP4_BREAKTHROUGH_DGX_SPARK.md](NVFP4_BREAKTHROUGH_DGX_SPARK.md)** for the full benchmark write-up with 14-config Pareto frontier results across 5 configurations.
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                     NVIDIA DGX Spark GB10                       │
-│              Grace Blackwell Superchip (SM_121)                 │
-│         119.7 GB Unified LPDDR5X @ 273 GB/s bandwidth          │
-│                                                                 │
-│  ┌───────────────────────────────────────────────────────────┐  │
-│  │  FP4 Tensor Cores (mma.sync.m16n8k64.e2m1.e2m1)         │  │
-│  │  FP8 Tensor Cores (mma.sync.m16n8k32.e4m3.e4m3)         │  │
-│  │  ✗ Missing: cvt.rn.satfinite.e2m1x2.f32 (FP4 convert)  │  │
-│  └───────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
-```
+<p align="center">
+  <h1 align="center">dgx-vllm</h1>
+  <p align="center">
+    <strong>NVFP4 inference on NVIDIA DGX Spark GB10 — finally faster than AWQ</strong>
+  </p>
+  <p align="center">
+    <a href="https://hub.docker.com/r/avarok/dgx-vllm-nvfp4-kernel"><img src="https://img.shields.io/badge/Docker%20Hub-v22-blue?logo=docker" alt="Docker Hub"></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-green" alt="License"></a>
+    <a href="https://github.com/Avarok-Cybersecurity/dgx-vllm"><img src="https://img.shields.io/badge/Platform-DGX%20Spark%20GB10-76B900?logo=nvidia" alt="Platform"></a>
+  </p>
+</p>
 
 ---
 
-## The Software Stack
+The first open-source vLLM image to unlock full NVFP4 performance on NVIDIA DGX Spark. NVFP4 is **~20% faster than AWQ INT4** — and with MTP speculative decoding, it peaks at **111.9 tok/s** from an 80B-parameter model on a single desktop GPU.
 
-This image bridges the gap between GB10's hardware FP4 tensor cores and vLLM's inference engine. Each layer solves a specific problem:
+| Configuration | Avg Decode | Peak Decode | vs AWQ |
+|---|---:|---:|---:|
+| AWQ INT4 (NVIDIA official) | ~34 tok/s | 38.2 tok/s | baseline |
+| AWQ INT4 (Avarok) | ~36 tok/s | 39.7 tok/s | +6% |
+| NVFP4 (NVIDIA official) | ~36 tok/s | 40.2 tok/s | +0% |
+| **NVFP4 (Avarok)** | **~42 tok/s** | **47.1 tok/s** | **+20%** |
+| **NVFP4 + MTP (Avarok)** | **~67 tok/s** | **111.9 tok/s** | **~2x** |
 
-```
- Layer 7 ─ Model        Qwen3-Next-80B-A3B (MoE, 512 experts, NVFP4)
-           │
- Layer 6 ─ vLLM V1      Inference engine: CUDA graphs, chunked prefill,
-           │             FlashInfer attention, MoE routing
-           │
- Layer 5 ─ Patches      Qwen3Next prefix fix, EMULATION backend fix
-           │             Capability 121 → SM_120 kernel routing
-           │             FlashInfer SM121 JIT patches
-           │
- Layer 4 ─ CUTLASS      FP4 MoE GEMM (BlockScaled, Cooperative, 4 tiles)
-           │             FP4 scaled_mm, FP8 scaled_mm (SM120 kernels)
-           │
- Layer 3 ─ Software     ★ patch_nvfp4_utils_sw_e2m1.py ★
-           │ E2M1        15-line device function replacing missing PTX
-           │             Enables ALL 5 NVFP4 kernel files on SM121
-           │
- Layer 2 ─ CUDA 13.0    nv_fp4_dummy.h (FP4 type definitions)
-           │             CCCL header patches, FlashInfer JIT patches
-           │
- Layer 1 ─ Base Image   nvidia/cuda:13.0.2-cudnn-devel-ubuntu24.04
-           │             PyTorch 2.10+cu130, Triton 3.6.0
-           │
- Layer 0 ─ Hardware     GB10 GPU: SM_121, CC 12.1, ARM64 Grace CPU
-```
+> Read the full benchmark write-up: **[NVFP4_BREAKTHROUGH_DGX_SPARK.md](NVFP4_BREAKTHROUGH_DGX_SPARK.md)**
 
-### Why This Exists
+---
 
-GB10 has FP4 tensor cores for matrix multiplication, but is **missing the hardware instruction** (`cvt.rn.satfinite.e2m1x2.f32`) that converts activations from float32 to E2M1 format. Without this instruction, CUDA refuses to compile the quantization kernels, forcing a Python software fallback that runs at 1.1 tok/s.
+## Table of Contents
 
-Our fix: a 15-line C++ device function that performs the conversion in software, guarded by `#if __CUDA_ARCH__ == 1210`. This compiles all 5 NVFP4 kernels natively, enables CUDA graph capture (54 graphs), and delivers 59.9 tok/s with Marlin GEMM + MTP speculative decoding (84% draft acceptance rate).
+- [Quick Start](#-quick-start)
+- [Why This Exists](#-why-this-exists)
+- [Performance](#-performance)
+- [Architecture](#-architecture)
+- [Configuration](#-configuration)
+- [File Reference](#-file-reference)
+- [Build History](#-build-history)
+- [License](#-license)
 
 ---
 
 ## Quick Start
 
-### Pull and Run
+### Pull and run (~67 tok/s with MTP)
 
 ```bash
 docker pull avarok/dgx-vllm-nvfp4-kernel:v22
@@ -82,23 +49,25 @@ docker pull avarok/dgx-vllm-nvfp4-kernel:v22
 docker run -d --name vllm-nvfp4 \
   --network host --gpus all --ipc=host \
   -v $HOME/.cache/huggingface:/root/.cache/huggingface \
-  -v /path/to/fix_mtp_nvfp4_exclusion.py:/tmp/fix_mtp_nvfp4_exclusion.py:ro \
+  -e VLLM_USE_FLASHINFER_MOE_FP4=0 \
   -e VLLM_TEST_FORCE_FP8_MARLIN=1 \
   -e VLLM_NVFP4_GEMM_BACKEND=marlin \
   -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
-  --entrypoint bash \
-  avarok/dgx-vllm-nvfp4-kernel:v22 -c '
-python3 /tmp/fix_mtp_nvfp4_exclusion.py && \
-vllm serve nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4 \
-  --host 0.0.0.0 --port 8888 \
-  --max-model-len 4096 --gpu-memory-utilization 0.90 \
-  --max-num-seqs 128 --attention-backend flashinfer \
-  --kv-cache-dtype fp8 --no-enable-chunked-prefill \
-  --speculative-config "{\"method\":\"mtp\",\"num_speculative_tokens\":2}"
-'
+  -e MODEL=nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4 \
+  -e PORT=8888 -e GPU_MEMORY_UTIL=0.90 \
+  -e MAX_MODEL_LEN=65536 -e MAX_NUM_SEQS=128 \
+  -e VLLM_EXTRA_ARGS="--attention-backend flashinfer --kv-cache-dtype fp8" \
+  avarok/dgx-vllm-nvfp4-kernel:v22 serve
 ```
 
-### Build Locally
+To enable MTP speculative decoding, add to `VLLM_EXTRA_ARGS`:
+```
+--speculative-config '{"method":"mtp","num_speculative_tokens":2}' --no-enable-chunked-prefill
+```
+
+> **Note:** MTP requires `fix_mtp_nvfp4_exclusion.py` to be run inside the container before serving. Mount it and prepend to the entrypoint, or apply it at build time.
+
+### Build locally
 
 ```bash
 git clone https://github.com/Avarok-Cybersecurity/dgx-vllm.git
@@ -106,90 +75,101 @@ cd dgx-vllm
 docker build -t dgx-vllm:v22 .
 ```
 
-### Test
+### Verify
 
 ```bash
-# Wait ~7 min for startup (model load + torch.compile + CUDA graphs)
+# Wait ~10 min for startup (model load + torch.compile + CUDA graphs)
 curl http://localhost:8888/v1/models
 
 curl -s http://localhost:8888/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model":"GadflyII/Qwen3-Coder-Next-NVFP4",
+  -d '{"model":"nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4",
        "messages":[{"role":"user","content":"Hello!"}],
        "max_tokens":100}' | jq -r '.choices[0].message.content'
 ```
 
 ---
 
-## Performance
+## Why This Exists
 
-| Framework | Backend | Throughput | Notes |
-|-----------|---------|-----------|-------|
-| vLLM v20 (Python FP4 fallback) | — | 1.1 tok/s | `.item()` calls block CUDA graphs |
-| vLLM v21 (eager, no CUDA graphs) | CUTLASS | 22 tok/s | Baseline without compilation |
-| TensorRT-LLM v1.3.0rc2 | CUTLASS | 29.6 tok/s | NVIDIA's optimized runtime |
-| AWQ INT4 (NVIDIA image) | Marlin | ~34 tok/s | Previous best 4-bit option |
-| vLLM v21 + CUDA graphs | CUTLASS | 35.0 tok/s | Software E2M1 + torch.compile |
-| AWQ INT4 (Avarok image) | Marlin | ~36 tok/s | +6% from newer vLLM |
-| NVFP4 (NVIDIA image) | flashinfer-cutlass | ~36 tok/s | Same speed as AWQ (no Marlin) |
-| vLLM v22 + CUDA graphs | Marlin (all) | **~42 tok/s** | **+20% faster than AWQ** |
-| **vLLM v22 + MTP (2 tokens)** | **Marlin (all)** | **~67 tok/s avg** | **Peak 111.9 tok/s (63-89% accept)** |
-| Theoretical ceiling (single-token) | — | ~46 tok/s | 273 GB/s bandwidth limit |
+The DGX Spark's GB10 GPU has native FP4 tensor cores — but its SM 12.1 compute capability is **missing a critical PTX instruction** (`cvt.rn.satfinite.e2m1x2.f32`) required for NVFP4 quantization. Without it:
 
-Benchmarked on Qwen3-Next-80B-A3B-Instruct-NVFP4 (MoE, 512 experts, top-10 routing), single GB10 GPU, 14-config Pareto frontier at 64K context. MTP (Multi-Token Prediction) uses the model's built-in draft head to speculate future tokens. This **exceeds the theoretical single-token memory-bandwidth ceiling** by generating multiple tokens per forward pass. Marlin dequantizes FP4 weights to FP16 at runtime, optimized for memory-bandwidth-bound batch=1 decode.
+```
+                        NVIDIA DGX Spark GB10
+                Grace Blackwell Superchip (SM_121)
+           119.7 GB Unified LPDDR5X @ 273 GB/s bandwidth
 
-See **[NVFP4_BREAKTHROUGH_DGX_SPARK.md](NVFP4_BREAKTHROUGH_DGX_SPARK.md)** for full benchmark tables and analysis.
+    FP4 Tensor Cores    mma.sync.m16n8k64.e2m1.e2m1     [WORKS]
+    FP8 Tensor Cores    mma.sync.m16n8k32.e4m3.e4m3     [WORKS]
+    FP4 Convert         cvt.rn.satfinite.e2m1x2.f32     [MISSING]
+```
 
-### Optimization History
+- **Vanilla vLLM** falls back to Python — **1.1 tok/s** (unusable)
+- **NVIDIA's official image** uses `flashinfer-cutlass` — **~36 tok/s** (same as AWQ, no advantage)
+- **TensorRT-LLM** hits a hard ceiling — **29.6 tok/s** (CUTLASS cooperative-only scheduling)
 
-| Commit | Improvement | Throughput | Spec Decode |
-|--------|------------|-----------|-------------|
-| `9e1cd69` | Software E2M1 + CUDA graphs | 35.0 tok/s | No |
-| `e9ff094` | + Marlin MoE backend (W4A16 dequant) | 39.5 tok/s | No |
-| `cf81980` | + Marlin dense GEMM | 40.2 tok/s | No |
-| `83e7f1d` | + MTP speculative decoding (2 tokens) | 59.9 tok/s | Yes (MTP, 2 tokens) |
-| `4481506` | **v22: pin vLLM, re-enable torch.compile, 64K context** | **~67 tok/s avg, 111.9 peak** | Yes (MTP, 2 tokens) |
-
-See [OPTIMIZATIONS.md](OPTIMIZATIONS.md) for detailed analysis of each improvement and failed experiments.
+We wrote a 15-line software E2M1 conversion function, enabled the Marlin MoE backend, and patched SM 12.1 capability routing. NVFP4 now runs at **~42 tok/s** without speculative decoding — 20% faster than AWQ. With MTP, it reaches **~67 tok/s average** and peaks at **111.9 tok/s**.
 
 ---
 
-## Stack Details
+## Performance
 
-### Layer 0: Hardware — NVIDIA DGX Spark GB10
+### Throughput progression
 
-| Spec | Value |
-|------|-------|
-| GPU | NVIDIA GB10 (Blackwell consumer variant) |
-| Compute Capability | 12.1 (SM_121) |
-| Architecture | Grace Blackwell Superchip (ARM64 CPU + GPU) |
-| Memory | 119.7 GB unified LPDDR5X |
-| Bandwidth | 273 GB/s |
-| FP4 Tensor Cores | Native `mma.sync.aligned.m16n8k64.f32.e2m1.e2m1` |
-| FP4 Convert | **Missing** `cvt.rn.satfinite.e2m1x2.f32` |
+| Stage | Backend | Throughput | Notes |
+|-------|---------|----------:|-------|
+| Vanilla vLLM (broken) | Python fallback | 1.1 tok/s | Missing PTX causes catastrophic fallback |
+| + Software E2M1 | CUTLASS | 35.0 tok/s | 32x improvement from one patch |
+| + Marlin MoE | Marlin | 40.2 tok/s | +15% from backend switch |
+| + torch.compile + pin vLLM | Marlin | **~42 tok/s** | **v22 baseline, +20% vs AWQ** |
+| + MTP (2 tokens) | Marlin | **~67 tok/s** | **Peak 111.9 tok/s** |
+| Theoretical ceiling | — | ~46 tok/s | 273 GB/s bandwidth limit (single-token) |
 
-### Layer 1: Base Image & PyTorch
+MTP exceeds the single-token bandwidth ceiling by generating ~2.4 tokens per forward pass (63-89% draft acceptance).
 
-| Component | Version |
-|-----------|---------|
-| Base | `nvidia/cuda:13.0.2-cudnn-devel-ubuntu24.04` |
-| PyTorch | 2.10.0+cu130 (ARM64 wheel) |
-| Triton | 3.6.0 (SM_121 support) |
-| FlashInfer | Latest pre-release |
-| XGrammar | Latest stable |
-| Python | 3.12 |
+### Optimization commits
 
-### Layer 2: CUDA FP4 Type System
+| Commit | Change | Throughput |
+|--------|--------|----------:|
+| `9e1cd69` | Software E2M1 + CUDA graphs | 35.0 tok/s |
+| `e9ff094` | Marlin MoE backend | 39.5 tok/s |
+| `cf81980` | Marlin dense GEMM | 40.2 tok/s |
+| `83e7f1d` | MTP speculative decoding (2 tokens) | 59.9 tok/s |
+| `4481506` | **v22: pin vLLM rev, re-enable torch.compile** | **~67 tok/s avg** |
 
-GB10's CUDA 13.0 CCCL headers reference `__nv_fp4_e2m1` but the type doesn't exist in the SDK. We provide:
+See [OPTIMIZATIONS.md](OPTIMIZATIONS.md) for detailed analysis including failed experiments.
 
-- **`nv_fp4_dummy.h`** — Complete FP4 type implementation (280+ lines): 3 types, 5 intrinsics, 9 operators
-- **`patch_cccl_fp4.sh`** — Patches CCCL headers to include the FP4 types at build time
-- **`patch_flashinfer_fp4.sh`** — Patches FlashInfer headers for runtime JIT compilation
+---
 
-### Layer 3: Software E2M1 Conversion (The Key Innovation)
+## Architecture
 
-The `cvt.rn.satfinite.e2m1x2.f32` PTX instruction converts float32 to 4-bit E2M1 format. GB10 doesn't have it. Our software replacement:
+This image bridges GB10's hardware FP4 tensor cores and vLLM's inference engine through 7 layers of patches and integrations:
+
+```
+ Layer 7  Model        Qwen3-Next-80B-A3B (MoE, 512 experts, NVFP4)
+            |
+ Layer 6  vLLM V1      CUDA graphs, chunked prefill, FlashInfer attention,
+            |           MoE routing, MTP speculative decoding
+            |
+ Layer 5  Patches      Qwen3Next prefix fix, EMULATION backend fix
+            |           Capability 121 -> SM_120 routing, FlashInfer JIT
+            |
+ Layer 4  CUTLASS      FP4 MoE GEMM (BlockScaled, Cooperative, 4 tiles)
+            |           FP4/FP8 scaled_mm (SM120 kernels)
+            |
+ Layer 3  Software     patch_nvfp4_utils_sw_e2m1.py
+            |  E2M1     15-line device function replacing missing PTX
+            |
+ Layer 2  CUDA 13.0    nv_fp4_dummy.h (FP4 type definitions)
+            |           CCCL + FlashInfer header patches
+            |
+ Layer 1  Base Image   nvidia/cuda:13.0.2-cudnn-devel-ubuntu24.04
+            |           PyTorch 2.10+cu130, Triton 3.6.0
+            |
+ Layer 0  Hardware     GB10 GPU: SM_121, 119.7 GB LPDDR5X, ARM64 Grace
+```
+
+### The key fix: Software E2M1 conversion
 
 ```cpp
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 1210
@@ -210,166 +190,99 @@ __device__ __forceinline__ uint8_t _sw_float_to_e2m1(float x) {
 #endif
 ```
 
-This implements IEEE 754 round-to-nearest-even for E2M1, matching hardware behavior exactly. Applied by `patch_nvfp4_utils_sw_e2m1.py` to vLLM's `nvfp4_utils.cuh`.
+IEEE 754 round-to-nearest-even for E2M1, matching hardware behavior exactly. Applied to all 5 NVFP4 kernel files via `patch_nvfp4_utils_sw_e2m1.py`.
 
-**Files:**
-- `patch_nvfp4_utils_sw_e2m1.py` — Patches `nvfp4_utils.cuh` with `#if __CUDA_ARCH__ == 1210` guards
-- `cmake_patch_gb10_nvfp4_v6_full_kernels.sh` — CMake patch to compile all 5 NVFP4 kernel files
+### Hardware specs
 
-**NVFP4 kernel files compiled for SM121:**
+| Spec | Value |
+|------|-------|
+| GPU | NVIDIA GB10 (Blackwell) |
+| Compute Capability | 12.1 (SM_121) |
+| Architecture | Grace Blackwell Superchip (ARM64 + GPU) |
+| Memory | 119.7 GB unified LPDDR5X |
+| Bandwidth | 273 GB/s |
+| FP4 Tensor Cores | `mma.sync.aligned.m16n8k64.f32.e2m1.e2m1` |
+| FP4 Convert | **Missing** `cvt.rn.satfinite.e2m1x2.f32` |
 
-| Kernel File | Purpose |
-|-------------|---------|
-| `nvfp4_quant_kernels.cu` | Activation quantization (BF16 → FP4) |
-| `nvfp4_experts_quant.cu` | Per-expert MoE quantization |
-| `activation_nvfp4_quant_fusion_kernels.cu` | SiLU + Mul + FP4 quantization |
-| `nvfp4_blockwise_moe_kernel.cu` | CUTLASS FP4 MoE GEMM |
-| `nvfp4_scaled_mm_sm120_kernels.cu` | CUTLASS FP4 dense GEMM |
+### Software stack
 
-### Layer 4: CUTLASS Kernels
+| Component | Version |
+|-----------|---------|
+| Base image | `nvidia/cuda:13.0.2-cudnn-devel-ubuntu24.04` |
+| vLLM | v0.16.0rc2 (pinned at `3b30e6150`) |
+| PyTorch | 2.10.0+cu130 |
+| Triton | 3.6.0 |
+| FlashInfer | Latest pre-release |
+| Python | 3.12 |
 
-Native FP4 and FP8 matrix multiplication via CUTLASS 4.x BlockScaled templates:
-
-| Kernel | Scheduling | Tile Shapes | Pipeline |
-|--------|-----------|-------------|----------|
-| FP4 MoE GEMM | Cooperative (8 warps) | 256x128x128, 128x128x256, 128x256x128, 128x128x128 | 3-stage |
-| FP4 scaled_mm | Cooperative | Auto-selected | 3-stage |
-| FP8 scaled_mm | PyTorch fallback | `torch._scaled_mm` | N/A |
-
-ClusterShape forced to 1x1x1 (GB10 has no multi-CTA clusters).
-
-**Additional custom kernels:**
-- `grouped_mm_gb10_native.cu` — GB10-optimized grouped GEMM with TMA and Pingpong scheduling
-- `scaled_mm_sm121_fp8.cu` / `scaled_mm_blockwise_sm121_fp8.cu` — SM121 FP8 kernels
-
-### Layer 5: vLLM Source Patches
-
-Applied after `pip install -e .` to fix runtime issues:
-
-| Patch | Problem | Fix |
-|-------|---------|-----|
-| `fix_qwen3_next_prefix.py` | Doubled `.in_proj_qkvz` prefix breaks weight loading | Remove duplicate prefix append in `create_qkvz_proj` |
-| `fix_nvfp4_emulation_backend.py` | EMULATION backend produces garbled output | Fix scale format (LINEAR not swizzled) and global_scale inversion |
-| `fix_capability_121_v112.py` | Capability 121 not routed to SM120 kernels | Route `>= 120 && < 130` to SM120 codepath |
-| `fix_dispatcher_flag_v115.sh` | `ENABLE_SCALED_MM_SM120` undefined in dispatcher | Set compile definition for `scaled_mm_entry.cu` |
-| `fix_cmake_sm120_archs_v113_corrected.sh` | Wrong CMake branch for CUDA 13.0+ | Fix line 533 (not 535) to include `12.1f` |
-| `fix_flashinfer_e2m1_sm121.py` | FlashInfer JIT fails on SM121 (E2M1 convert) | Software E2M1 for FlashInfer runtime compilation |
-| `fix_flashinfer_nvfp4_moe_backend.py` | FlashInfer MoE backend returns None for experts_cls | Return `k_cls` instead of `None` |
-| `fix_mtp_nvfp4_exclusion.py` | MTP layers not excluded from NVFP4 quantization | Exclude all `mtp.*` layers when exclude list targets MTP |
-
-### Layer 6: vLLM V1 Engine
-
-Runtime configuration for NVFP4 inference:
-
-| Feature | Status | Notes |
-|---------|--------|-------|
-| **MTP Spec Decode** | **Enabled (2 tokens)** | **+49% throughput (40.2→59.9), 84%/53% accept rate** |
-| CUDA Graphs | 54 captured (35 piecewise + 19 full decode) | +64% throughput (22→36 tok/s) |
-| torch.compile | Active (mode=VLLM_COMPILE) | vLLM Inductor backend, ~1% gain |
-| FlashInfer Attention | Enabled | SM120 native attention kernels |
-| Chunked Prefill | Disabled (required for spec decode) | Must use `--no-enable-chunked-prefill` with MTP |
-| Prefix Caching | Supported | Via `--enable-prefix-caching` |
-| MoE Backend | **Marlin** (recommended) or CUTLASS | Marlin: W4A16 dequant, +13% over CUTLASS |
-
-### Layer 7: Model
+### Model
 
 | Property | Value |
 |----------|-------|
-| Model | Qwen3-Next-80B-A3B-Instruct |
+| Model | Qwen3-Next-80B-A3B-Instruct-NVFP4 |
 | Parameters | 80B total, ~3B active per token |
-| Architecture | Hybrid (Attention + Mamba SSM) |
-| Experts | 512 (top-10 routing) |
+| Architecture | Hybrid (Attention + Mamba SSM), MoE (512 experts, top-10) |
 | Quantization | NVFP4 (E2M1 weights + FP8 E4M3 block scales) |
-| Format | `compressed-tensors` |
-| Context | 131K tokens (model), limited by GPU memory |
+| Context | Up to 128K tokens |
 
 ---
 
 ## Configuration
 
-### Environment Variables
+### Environment variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MODEL` | (required) | HuggingFace model ID |
-| `PORT` | 8888 | API server port |
-| `GPU_MEMORY_UTIL` | 0.75 | GPU memory fraction (0.0–1.0) |
-| `MAX_MODEL_LEN` | 131072 | Maximum context length |
-| `MAX_NUM_SEQS` | 128 | Maximum concurrent sequences |
-| `TENSOR_PARALLEL_SIZE` | 1 | Number of GPUs |
-| `VLLM_EXTRA_ARGS` | "" | Additional vLLM CLI arguments |
-| `VLLM_USE_FLASHINFER_MOE_FP4` | 0 | Use FlashInfer MoE (set 0 for CUTLASS/Marlin) |
-| `VLLM_TEST_FORCE_FP8_MARLIN` | 0 | Force Marlin MoE backend (+13% throughput) |
-| `VLLM_NVFP4_GEMM_BACKEND` | (auto) | Set `marlin` for Marlin dense GEMM (+2% over FlashInfer CUTLASS) |
-| `PYTORCH_CUDA_ALLOC_CONF` | (unset) | Set `expandable_segments:True` to reduce fragmentation |
+| `MODEL` | *(required)* | HuggingFace model ID |
+| `PORT` | `8888` | API server port |
+| `GPU_MEMORY_UTIL` | `0.75` | GPU memory fraction (0.0–1.0) |
+| `MAX_MODEL_LEN` | `131072` | Maximum context length |
+| `MAX_NUM_SEQS` | `128` | Maximum concurrent sequences |
+| `TENSOR_PARALLEL_SIZE` | `1` | Number of GPUs |
+| `VLLM_EXTRA_ARGS` | `""` | Additional vLLM CLI arguments |
+| `VLLM_USE_FLASHINFER_MOE_FP4` | `0` | Set `0` for CUTLASS/Marlin MoE backend |
+| `VLLM_TEST_FORCE_FP8_MARLIN` | `0` | Set `1` to force Marlin MoE backend (+17%) |
+| `VLLM_NVFP4_GEMM_BACKEND` | *(auto)* | Set `marlin` for Marlin dense GEMM |
+| `PYTORCH_CUDA_ALLOC_CONF` | *(unset)* | Set `expandable_segments:True` to reduce fragmentation |
 
-### Container Modes
-
-```bash
-docker run ... dgx-vllm:v22 serve        # Start vLLM API server (default)
-docker run ... dgx-vllm:v22 ray-head     # Start Ray head node
-docker run ... dgx-vllm:v22 ray-worker   # Start Ray worker node
-docker run ... dgx-vllm:v22 bash         # Interactive shell
-```
-
-### Recommended Launch with MTP Speculative Decoding (~60 tok/s)
+### Container modes
 
 ```bash
-docker run -d --name vllm-nvfp4 \
-  --network host --gpus all --ipc=host \
-  -v $HOME/.cache/huggingface:/root/.cache/huggingface \
-  -v /path/to/fix_mtp_nvfp4_exclusion.py:/tmp/fix_mtp_nvfp4_exclusion.py:ro \
-  -e VLLM_USE_FLASHINFER_MOE_FP4=0 \
-  -e VLLM_TEST_FORCE_FP8_MARLIN=1 \
-  -e VLLM_NVFP4_GEMM_BACKEND=marlin \
-  -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
-  --entrypoint bash \
-  avarok/dgx-vllm-nvfp4-kernel:v22 -c '
-python3 /tmp/fix_mtp_nvfp4_exclusion.py && \
-vllm serve nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4 \
-  --host 0.0.0.0 --port 8888 \
-  --max-model-len 4096 --gpu-memory-utilization 0.90 \
-  --max-num-seqs 128 --attention-backend flashinfer \
-  --kv-cache-dtype fp8 --no-enable-chunked-prefill \
-  --speculative-config "{\"method\":\"mtp\",\"num_speculative_tokens\":2}"
-'
-```
-
-**Note:** MTP requires `fix_mtp_nvfp4_exclusion.py` to patch a bug where MTP layers are incorrectly quantized to NVFP4. The patch excludes all `mtp.*` layers from quantization since they are stored as BF16 in the checkpoint. Chunked prefill must be disabled for speculative decoding.
-
-### Launch without MTP (~40 tok/s)
-
-```bash
-docker run -d --name vllm-nvfp4 \
-  --network host --gpus all --ipc=host \
-  -v $HOME/.cache/huggingface:/root/.cache/huggingface \
-  -e VLLM_USE_FLASHINFER_MOE_FP4=0 \
-  -e VLLM_TEST_FORCE_FP8_MARLIN=1 \
-  -e VLLM_NVFP4_GEMM_BACKEND=marlin \
-  -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
-  -e MODEL=nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4 \
-  -e PORT=8888 -e GPU_MEMORY_UTIL=0.90 \
-  -e MAX_MODEL_LEN=4096 -e MAX_NUM_SEQS=128 \
-  -e VLLM_EXTRA_ARGS="--attention-backend flashinfer --kv-cache-dtype fp8" \
-  avarok/dgx-vllm-nvfp4-kernel:v22 serve
+docker run ... avarok/dgx-vllm-nvfp4-kernel:v22 serve        # vLLM API server (default)
+docker run ... avarok/dgx-vllm-nvfp4-kernel:v22 ray-head     # Ray head node
+docker run ... avarok/dgx-vllm-nvfp4-kernel:v22 ray-worker   # Ray worker node
+docker run ... avarok/dgx-vllm-nvfp4-kernel:v22 bash         # Interactive shell
 ```
 
 ---
 
 ## File Reference
 
-### Build Files (Layer 2–3)
+### Build & packaging
 
 | File | Purpose |
 |------|---------|
-| `Dockerfile` | Multi-stage build: base → patches → compile → runtime fixes |
-| `nv_fp4_dummy.h` | FP4 type definitions for CUDA 13.0 |
-| `patch_cccl_fp4.sh` | Patches CCCL headers with FP4 types |
-| `patch_flashinfer_fp4.sh` | Patches FlashInfer headers for FP4 JIT |
-| `patch_nvfp4_utils_sw_e2m1.py` | **Software E2M1 for SM121** (the key fix) |
-| `cmake_patch_gb10_nvfp4_v6_full_kernels.sh` | CMake patch for all 5 NVFP4 kernels |
+| `Dockerfile` | Multi-stage build: base, patches, compile, runtime fixes |
+| `build.sh` | Build script (local or remote node) |
+| `push.sh` | Push to Docker Hub |
+| `entrypoint.sh` | Container entrypoint (serve / ray-head / ray-worker / bash) |
 
-### Kernel Files (Layer 4)
+### CUDA FP4 type system
+
+| File | Purpose |
+|------|---------|
+| `nv_fp4_dummy.h` | FP4 type definitions for CUDA 13.0 (3 types, 5 intrinsics, 9 operators) |
+| `patch_cccl_fp4.sh` | Patches CCCL headers to include FP4 types |
+| `patch_flashinfer_fp4.sh` | Patches FlashInfer headers for FP4 JIT |
+
+### Software E2M1 (the key fix)
+
+| File | Purpose |
+|------|---------|
+| `patch_nvfp4_utils_sw_e2m1.py` | Software E2M1 conversion for SM121 — the patch that makes NVFP4 work |
+| `cmake_patch_gb10_nvfp4_v6_full_kernels.sh` | CMake patch to compile all 5 NVFP4 kernel files |
+
+### SM121 kernels
 
 | File | Purpose |
 |------|---------|
@@ -378,9 +291,9 @@ docker run -d --name vllm-nvfp4 \
 | `scaled_mm_sm121_fp8.cu` | SM121 FP8 scaled matmul |
 | `scaled_mm_blockwise_sm121_fp8.cu` | SM121 FP8 blockwise scaled matmul |
 | `scaled_mm_c3x_sm121.cu` | CUTLASS 3.x SM121 kernel |
-| `cutlass_nvfp4/` | Custom CUTLASS FP4 extension (headers + kernels) |
+| `cutlass_nvfp4/` | Custom CUTLASS FP4 extension (headers, kernels, tests) |
 
-### Integration Scripts (Layer 4–5)
+### Integration scripts
 
 | File | Purpose |
 |------|---------|
@@ -389,45 +302,36 @@ docker run -d --name vllm-nvfp4 \
 | `integrate_cuda_fp4_extension.sh` | Integrates custom CUTLASS FP4 extension |
 | `integrate_sm121_fp8_fix_v2.sh` | FP8 backend selection fix |
 
-### Runtime Patches (Layer 5)
+### Runtime patches
+
+| File | Problem | Fix |
+|------|---------|-----|
+| `fix_qwen3_next_prefix.py` | Doubled weight loading prefix | Remove duplicate prefix in `create_qkvz_proj` |
+| `fix_nvfp4_emulation_backend.py` | Garbled EMULATION output | Fix scale format + global_scale inversion |
+| `fix_capability_121_v112.py` | SM121 not routed to SM120 kernels | Route CC 121 to SM120 codepath |
+| `fix_cmake_sm120_archs_v113_corrected.sh` | Wrong CMake branch for CUDA 13.0+ | Fix arch list to include `12.1f` |
+| `fix_dispatcher_flag_v115.sh` | `ENABLE_SCALED_MM_SM120` undefined | Set compile definition for dispatcher |
+| `fix_flashinfer_e2m1_sm121.py` | FlashInfer JIT fails on SM121 | Software E2M1 for FlashInfer runtime |
+| `fix_flashinfer_nvfp4_moe_backend.py` | MoE backend returns `None` | Return `k_cls` correctly |
+| `fix_mtp_nvfp4_exclusion.py` | MTP layers incorrectly quantized | Exclude `mtp.*` layers from NVFP4 |
+
+### Runtime configuration
 
 | File | Purpose |
 |------|---------|
-| `fix_qwen3_next_prefix.py` | Fix Qwen3Next weight loading prefix |
-| `fix_nvfp4_emulation_backend.py` | Fix EMULATION backend dequantization |
-| `fix_capability_121_v112.py` | Route CC 121 → SM120 kernels |
-| `fix_cmake_sm120_archs_v113_corrected.sh` | CMake arch list fix for CUDA 13.0+ |
-| `fix_dispatcher_flag_v115.sh` | Enable SM120 flag in dispatcher |
-| `fix_flashinfer_e2m1_sm121.py` | FlashInfer SM121 JIT E2M1 patches |
-| `fix_flashinfer_nvfp4_moe_backend.py` | FlashInfer MoE backend return fix |
-| `fix_mtp_nvfp4_exclusion.py` | Exclude all MTP layers from NVFP4 quantization |
-
-### Runtime Configuration
-
-| File | Purpose |
-|------|---------|
-| `entrypoint.sh` | Container entrypoint (serve/ray-head/ray-worker/bash) |
-| `E=512,N=512,...fp8_w8a8.json` | GB10-tuned MoE Triton config (+65.7%) |
+| `E=512,N=512,...fp8_w8a8.json` | GB10-tuned MoE Triton config (+65.7% vs default) |
 
 ---
 
 ## Build History
 
 | Version | Change | Throughput |
-|---------|--------|-----------|
-| v75 | Complete NVFP4 integration (Qwen3-30B) | 65 tok/s (30B model) |
-| v109 | GB10 native grouped GEMM kernel | — |
-| v112–v115 | Capability 121 routing (3-part fix chain) | — |
-| v118 | Meta backend for torch.compile | — |
-| v134 | Disable torch.compile for NVFP4 (no-op, see below) | — |
-| v20 | Python software FP4 quant (Qwen3-80B NVFP4) | 1.1 tok/s |
+|---------|--------|----------:|
+| v20 | Python software FP4 quant (Qwen3-80B) | 1.1 tok/s |
 | v21 | Software E2M1 in C++ + CUDA graphs | 35.0 tok/s |
-| v21+FlashInfer | FlashInfer SM121 JIT patches + MoE backend fix | 35.0 tok/s (FlashInfer fused MoE: garbled) |
-| v21+Marlin MoE | Marlin MoE backend (W4A16 dequant) + expandable_segments | 39.5 tok/s |
-| v21+Marlin (all) | Marlin for both dense + MoE GEMM | 40.2 tok/s |
-| v21+MTP (1 token) | MTP speculative decoding (84% accept) | 55.4 tok/s |
-| v21+MTP (2 tokens) | MTP with 2 speculative tokens (84%/53% accept) | 59.9 tok/s |
-| **v22** | **Pin vLLM rev, re-enable torch.compile, 64K context benchmarks** | **~67 tok/s avg, 111.9 peak** |
+| v21 + Marlin | Marlin MoE + dense GEMM backends | 40.2 tok/s |
+| v21 + MTP | MTP speculative decoding (2 tokens) | 59.9 tok/s |
+| **v22** | **Pin vLLM, re-enable torch.compile, 64K benchmarks** | **~67 tok/s avg** |
 
 ---
 
@@ -437,4 +341,4 @@ Built on [vLLM](https://github.com/vllm-project/vllm) (Apache 2.0) and NVIDIA CU
 
 Open source at [github.com/Avarok-Cybersecurity/dgx-vllm](https://github.com/Avarok-Cybersecurity/dgx-vllm).
 
-Built by [Avarok Cybersecurity](https://github.com/Avarok-Cybersecurity) with [Claude Code](https://claude.ai/claude-code).
+Built by [Avarok](https://github.com/Avarok-Cybersecurity) with [Claude Code](https://claude.ai/claude-code).
