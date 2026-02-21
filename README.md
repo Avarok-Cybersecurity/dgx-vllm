@@ -67,13 +67,47 @@ To enable MTP speculative decoding, add to `VLLM_EXTRA_ARGS`:
 
 > **Note:** MTP requires `fix_mtp_nvfp4_exclusion.py` to be run inside the container before serving. Mount it and prepend to the entrypoint, or apply it at build time.
 
-### Build locally
+### Build from source
+
+The Docker image takes 30–60 minutes to build. It compiles vLLM, CUTLASS kernels, and all SM121 patches from source.
 
 ```bash
 git clone https://github.com/Avarok-Cybersecurity/dgx-vllm.git
 cd dgx-vllm
 docker build -t dgx-vllm:v22 .
 ```
+
+#### Optional: Sparse FP4 2:4 kernel (saves 9 GiB GPU memory)
+
+The `sparse_fp4_kernel/` directory contains a custom CUDA GEMV kernel that exploits natural 2:4 sparsity in NVFP4 weights, reading only the 2 non-zero values per group of 4. This cuts MoE memory traffic by ~25% and frees 9 GiB for MTP speculative decoding.
+
+To build and install the kernel inside a running container:
+
+```bash
+# Start a container with the repo mounted
+docker run -it --gpus all --ipc=host \
+  -v $(pwd)/sparse_fp4_kernel:/workspace/sparse_fp4_kernel \
+  dgx-vllm:v22 bash
+
+# Inside the container:
+cd /workspace/sparse_fp4_kernel
+python setup_v7.py build_ext --inplace
+cp sparse_fp4_v7*.so $(python -c "import site; print(site.getsitepackages()[0])")/
+cp sparse_v7_moe_patch.py $(python -c "import site; print(site.getsitepackages()[0])")/
+```
+
+Then serve with the sparse kernel enabled:
+
+```bash
+# Inside the container:
+cd /workspace/sparse_fp4_kernel
+python vllm_serve_v7.py serve nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4 \
+  --host 0.0.0.0 --port 8888 --max-model-len 4096 \
+  --gpu-memory-utilization 0.90 --enforce-eager \
+  --attention-backend flashinfer --kv-cache-dtype fp8
+```
+
+Or set the environment variable `VLLM_NVFP4_SPARSE_V7=1` and import `sparse_v7_moe_patch` before model loading — the patch hooks into vLLM's weight-loading path automatically.
 
 ### Verify
 
