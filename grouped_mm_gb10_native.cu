@@ -46,22 +46,21 @@ template <typename InType, typename OutType,
 struct gb10_fp8_config_default {
   static_assert(std::is_same<InType, cutlass::float_e4m3_t>());
 
-  // GB10 uses 1SM Pingpong schedule (NOT 2SM like GB100)
-  // This overlaps mainloop and epilogue within a single SM
+  // GB10 kernel schedule - use Sm100 but with conservative parameters
+  // Runtime "Error Internal" might be from tile size or other config, not schedule
   using KernelSchedule =
       cutlass::gemm::KernelPtrArrayTmaWarpSpecialized1SmSm100;
 
   using EpilogueSchedule = cutlass::epilogue::PtrArrayTmaWarpSpecialized1Sm;
 
-  // Optimized tile size for GB10's 273 GB/s bandwidth
-  // Smaller than GB100 (which uses 256x256x128) due to bandwidth constraints
-  using TileShape = cute::Shape<cute::_128, cute::_256, cute::_128>;
+  // CONSERVATIVE tile size - start small to avoid shared memory/register issues
+  // GB10 has different limits than GB100, try minimal 64×128×64 first
+  using TileShape = cute::Shape<cute::_64, cute::_128, cute::_64>;
 
   // GB10 REQUIRES 1x1x1 cluster (no multicast support in GeForce)
   using ClusterShape = cute::Shape<cute::_1, cute::_1, cute::_1>;
 
-  // Use SM100 architecture tag - CUTLASS runtime treats SM120 as SM100-compatible
-  // for kernel execution, but with GB10-specific constraints applied
+  // Keep Sm100 arch tag since schedule requires it
   using ArchTag = cutlass::arch::Sm100;
 
   using Cutlass3xGemm =
@@ -87,8 +86,8 @@ struct gb10_fp8_config_small_batch {
 
   using EpilogueSchedule = cutlass::epilogue::PtrArrayTmaWarpSpecialized1Sm;
 
-  // Smaller tile for small batches - maximizes SM utilization
-  using TileShape = cute::Shape<cute::_128, cute::_128, cute::_128>;
+  // Small batch: use VERY conservative 64×64×64 tiles
+  using TileShape = cute::Shape<cute::_64, cute::_64, cute::_64>;
 
   using ClusterShape = cute::Shape<cute::_1, cute::_1, cute::_1>;
 

@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Build script for dgx-vllm Docker image v48
-# Features: Complete SM_121 support, GB10 MoE optimization, vLLM main-latest
+# Build script for dgx-vllm Docker image v22
+# Features: Complete SM_121 support, NVFP4 quantization, GB10 MoE optimization
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGE_NAME="dgx-vllm"
 IMAGE_TAG="${IMAGE_TAG:-latest}"
-IMAGE_VERSION="${IMAGE_VERSION:-48}"
+IMAGE_VERSION="${IMAGE_VERSION:-22}"
 REMOTE_NODE="${REMOTE_NODE:-10.10.10.2}"
 REMOTE_USER="${REMOTE_USER:-nologik}"
 
