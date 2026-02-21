@@ -56,11 +56,6 @@ ENV PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cu130
 # Reinstall PyTorch CUDA after flashinfer (which just downgraded it)
 RUN pip install torch==2.10.0+cu130 torchvision==0.25.0+cu130 torchaudio==2.10.0+cu130
 
-# Ensure pip-installed NCCL (from nvidia-nccl-cu12) is found before system NCCL.
-# PyTorch cu130 links against NCCL 2.26+ (ncclAlltoAll), but the CUDA 13.0.2 base
-# image ships an older NCCL missing that symbol.
-ENV LD_LIBRARY_PATH="/opt/venv/lib/python3.12/site-packages/nvidia/nccl/lib:${LD_LIBRARY_PATH}"
-
 # Clone vLLM (pinned to known-good revision for reproducible builds)
 RUN git clone https://github.com/vllm-project/vllm.git && \
     cd vllm && git checkout 3b30e6150777de549b11f67dde3ecc0d3b1f3f50
