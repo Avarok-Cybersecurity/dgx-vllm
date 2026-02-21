@@ -14,7 +14,7 @@ on:
         default: 'latest'
 
 env:
-  DOCKER_HUB_REPO: avarok/vllm-dgx-spark
+  DOCKER_HUB_REPO: avarok/dgx-vllm-nvfp4-kernel
   IMAGE_NAME: dgx-vllm
 
 jobs:
@@ -34,11 +34,11 @@ jobs:
           username: ${{ secrets.DOCKER_HUB_USERNAME }}
           password: ${{ secrets.DOCKER_HUB_TOKEN }}
 
-      - name: Extract version from VERSION file
+      - name: Extract version from .env
         id: version
         run: |
-          if [ -f VERSION ]; then
-            VERSION=$(grep "^VERSION=" VERSION | cut -d'=' -f2)
+          if [ -f .env ]; then
+            VERSION=$(grep "^IMAGE_VERSION=" .env | cut -d'=' -f2)
             echo "version=${VERSION}" >> $GITHUB_OUTPUT
           else
             echo "version=latest" >> $GITHUB_OUTPUT
@@ -63,6 +63,16 @@ jobs:
             type=raw,value=cutlass,enable={{is_default_branch}}
             type=raw,value=${{ steps.version.outputs.build_date }},enable={{is_default_branch}}
 
+      - name: Read build args from .env
+        id: buildargs
+        run: |
+          # Extract key build args from .env
+          echo "base_image=$(grep '^BASE_IMAGE=' .env | cut -d'=' -f2)" >> $GITHUB_OUTPUT
+          echo "vllm_commit=$(grep '^VLLM_COMMIT=' .env | cut -d'=' -f2)" >> $GITHUB_OUTPUT
+          echo "torch_version=$(grep '^TORCH_VERSION=' .env | cut -d'=' -f2)" >> $GITHUB_OUTPUT
+          echo "torchvision_version=$(grep '^TORCHVISION_VERSION=' .env | cut -d'=' -f2)" >> $GITHUB_OUTPUT
+          echo "torchaudio_version=$(grep '^TORCHAUDIO_VERSION=' .env | cut -d'=' -f2)" >> $GITHUB_OUTPUT
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
@@ -74,8 +84,12 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           build-args: |
-            BUILD_DATE=${{ steps.version.outputs.build_date }}
-            VERSION=${{ steps.version.outputs.version }}
+            BASE_IMAGE=${{ steps.buildargs.outputs.base_image }}
+            IMAGE_VERSION=${{ steps.version.outputs.version }}
+            VLLM_COMMIT=${{ steps.buildargs.outputs.vllm_commit }}
+            TORCH_VERSION=${{ steps.buildargs.outputs.torch_version }}
+            TORCHVISION_VERSION=${{ steps.buildargs.outputs.torchvision_version }}
+            TORCHAUDIO_VERSION=${{ steps.buildargs.outputs.torchaudio_version }}
 
       - name: Image digest
         run: echo ${{ steps.meta.outputs.digest }}

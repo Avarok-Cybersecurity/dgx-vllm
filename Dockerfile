@@ -1,23 +1,22 @@
-FROM nvidia/cuda:13.0.2-cudnn-devel-ubuntu24.04
-
 # ============================================================================
 # vLLM Docker Image for DGX Spark GB10
 # ============================================================================
-# Features:
-# - vLLM latest from main (auto-updated at build time)
-# - PyTorch stable with CUDA 13.0 (ARM64 compatible)
-# - Triton 3.6.0 with SM_121 support
-# - FlashInfer latest pre-release (patched for sm_121a)
-# - CUDA FP4 extension (custom headers + kernels for GB10)
-# - NVFP4 full compilation (software E2M1 for SM121, no stubs needed)
-# - GB10-optimized MoE Triton config (+65.7% throughput)
-# - SM_121 capability routing to SM_120 kernels
-# - CUTLASS FP8 disabled for SM_121 (PyTorch fallback)
-# - torch.compile RE-ENABLED for NVFP4 (v22: Marlin backend bypasses AutogradCUDA issue)
+# All versions are pinned in .env — build.sh passes them as --build-arg.
+# To build manually: docker build --build-arg VLLM_COMMIT=<sha> ...
 #
 # Build time: 30-60 minutes
 # Target: NVIDIA GB10 (sm_121, Compute Capability 12.1)
 # ============================================================================
+
+ARG BASE_IMAGE=nvidia/cuda:13.0.2-cudnn-devel-ubuntu24.04
+FROM ${BASE_IMAGE}
+
+# Build args sourced from .env via build.sh (with sensible defaults)
+ARG IMAGE_VERSION=22
+ARG VLLM_COMMIT=3b30e6150777de549b11f67dde3ecc0d3b1f3f50
+ARG TORCH_VERSION=2.10.0+cu130
+ARG TORCHVISION_VERSION=0.25.0+cu130
+ARG TORCHAUDIO_VERSION=2.10.0+cu130
 
 # Install essentials, InfiniBand/RDMA libraries, and network utilities
 RUN apt-get update && apt-get install -y \
@@ -54,11 +53,11 @@ RUN pip install flashinfer-python --pre
 ENV PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cu130
 
 # Reinstall PyTorch CUDA after flashinfer (which just downgraded it)
-RUN pip install torch==2.10.0+cu130 torchvision==0.25.0+cu130 torchaudio==2.10.0+cu130
+RUN pip install torch==${TORCH_VERSION} torchvision==${TORCHVISION_VERSION} torchaudio==${TORCHAUDIO_VERSION}
 
 # Clone vLLM (pinned to known-good revision for reproducible builds)
 RUN git clone https://github.com/vllm-project/vllm.git && \
-    cd vllm && git checkout 3b30e6150777de549b11f67dde3ecc0d3b1f3f50
+    cd vllm && git checkout ${VLLM_COMMIT}
 WORKDIR /app/vllm
 
 # Prepare for existing torch
@@ -305,16 +304,16 @@ ENV TORCH_NCCL_BLOCKING_WAIT=1
 # Install vLLM with local build (this takes a while)
 # Pin torch to cu130 via constraints to prevent pip from downgrading to CPU version.
 # Without this, vLLM's dependency resolution replaces torch+cu130 with torch (CPU).
-RUN echo "torch==2.10.0+cu130" > /tmp/constraints.txt && \
-    echo "torchvision==0.25.0+cu130" >> /tmp/constraints.txt && \
-    echo "torchaudio==2.10.0+cu130" >> /tmp/constraints.txt && \
+RUN echo "torch==${TORCH_VERSION}" > /tmp/constraints.txt && \
+    echo "torchvision==${TORCHVISION_VERSION}" >> /tmp/constraints.txt && \
+    echo "torchaudio==${TORCHAUDIO_VERSION}" >> /tmp/constraints.txt && \
     PIP_CONSTRAINT=/tmp/constraints.txt pip install --no-build-isolation -e . -v --pre
 
 # Fix PyTorch CUDA: vLLM pip install pulls torch from PyPI (CPU-only) despite
 # PIP_EXTRA_INDEX_URL. Force reinstall cu130 version. The CUDA extensions were
 # already compiled against CUDA torch (from our pre-build install), so the .so
 # files are compatible - only the Python package metadata needs fixing.
-RUN pip install torch==2.10.0+cu130 torchvision==0.25.0+cu130 torchaudio==2.10.0+cu130 \
+RUN pip install torch==${TORCH_VERSION} torchvision==${TORCHVISION_VERSION} torchaudio==${TORCHAUDIO_VERSION} \
     --index-url https://download.pytorch.org/whl/cu130 --force-reinstall --no-deps
 
 # ============================================================================
@@ -392,11 +391,10 @@ WORKDIR /app/vllm
 # Expose ports (vLLM API and Ray)
 EXPOSE 8888 6379
 
-# Version metadata
-LABEL version="22"
-LABEL build_date="2026-02-18"
-LABEL vllm_source="3b30e6150-patched"
-LABEL pytorch_version="stable-cu130"
+# Version metadata (populated from .env via build.sh --build-arg)
+LABEL version="${IMAGE_VERSION}"
+LABEL vllm_commit="${VLLM_COMMIT}"
+LABEL pytorch_version="${TORCH_VERSION}"
 LABEL compute_capability="12.1a-gb10"
 LABEL quantization_support="fp8-nvfp4"
 LABEL sm121_fp8_backend="torch-scaled-mm-fallback"
