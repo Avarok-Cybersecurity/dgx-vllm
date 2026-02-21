@@ -79,7 +79,12 @@ docker build -t dgx-vllm:v22 .
 
 #### Optional: Sparse FP4 2:4 kernel (saves 9 GiB GPU memory)
 
-The `sparse_fp4_kernel/` directory contains a custom CUDA GEMV kernel that exploits natural 2:4 sparsity in NVFP4 weights, reading only the 2 non-zero values per group of 4. This cuts MoE memory traffic by ~25% and frees 9 GiB for MTP speculative decoding.
+The `sparse_fp4_kernel/` directory contains a custom CUDA GEMV kernel that exploits natural 2:4 sparsity in NVFP4 weights, reading only the 2 non-zero values per group of 4. This cuts MoE memory traffic by ~25% and frees 9 GiB for larger KV cache (more concurrent sequences or longer context).
+
+**v8 kernel optimizations** over v7 baseline:
+1. **Vectorized 64-bit loads** (`uint2`) — THREAD_N=8 doubles memory throughput per thread
+2. **Atomic accumulation** — `atomicAdd` eliminates a separate `.sum(1)` reduction kernel
+3. **Pre-scaled FP8 LUT** — group scales folded into shared-memory lookup table at load time
 
 To build and install the kernel inside a running container:
 
@@ -91,9 +96,9 @@ docker run -it --gpus all --ipc=host \
 
 # Inside the container:
 cd /workspace/sparse_fp4_kernel
-python setup_v7.py build_ext --inplace
-cp sparse_fp4_v7*.so $(python -c "import site; print(site.getsitepackages()[0])")/
-cp sparse_v7_moe_patch.py $(python -c "import site; print(site.getsitepackages()[0])")/
+python setup_v8.py build_ext --inplace
+cp sparse_fp4_v8*.so $(python -c "import site; print(site.getsitepackages()[0])")/
+cp sparse_v8_moe_patch.py $(python -c "import site; print(site.getsitepackages()[0])")/
 ```
 
 Then serve with the sparse kernel enabled:
@@ -101,13 +106,13 @@ Then serve with the sparse kernel enabled:
 ```bash
 # Inside the container:
 cd /workspace/sparse_fp4_kernel
-python vllm_serve_v7.py serve nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4 \
+python vllm_serve_v8.py serve nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4 \
   --host 0.0.0.0 --port 8888 --max-model-len 4096 \
   --gpu-memory-utilization 0.90 --enforce-eager \
   --attention-backend flashinfer --kv-cache-dtype fp8
 ```
 
-Or set the environment variable `VLLM_NVFP4_SPARSE_V7=1` and import `sparse_v7_moe_patch` before model loading — the patch hooks into vLLM's weight-loading path automatically.
+Or set the environment variable `VLLM_NVFP4_SPARSE_V8=1` and import `sparse_v8_moe_patch` before model loading — the patch hooks into vLLM's weight-loading path automatically.
 
 ### Verify
 
@@ -157,9 +162,41 @@ We wrote a 15-line software E2M1 conversion function, enabled the Marlin MoE bac
 | + Marlin MoE | Marlin | 40.2 tok/s | +15% from backend switch |
 | + torch.compile + pin vLLM | Marlin | **~42 tok/s** | **v22 baseline, +20% vs AWQ** |
 | + MTP (2 tokens) | Marlin | **~67 tok/s** | **Peak 111.9 tok/s** |
+| + Sparse FP4 2:4 (v8) | Sparse GEMV | **~41 tok/s** | **-9 GiB model memory, +7.9 GiB KV cache** |
 | Theoretical ceiling | — | ~46 tok/s | 273 GB/s bandwidth limit (single-token) |
 
 MTP exceeds the single-token bandwidth ceiling by generating ~2.4 tokens per forward pass (63-89% draft acceptance).
+
+### v22 Marlin vs v8 Sparse — decode throughput (tok/s)
+
+Measured with `bench_full.py` (2 warmup + 3 bench runs, `temperature=0.0`, streaming SSE). v22 tested at `MAX_MODEL_LEN=65536`, v8 at `MAX_MODEL_LEN=4096`.
+
+| ISL/OSL | Regime | v22 Marlin | v8 Sparse | Delta |
+|---------|--------|----------:|----------:|------:|
+| 128/128 | Balanced | 47.1 | 46.8 | -0.6% |
+| 256/256 | Balanced | 44.0 | 43.3 | -1.6% |
+| 1024/128 | Prefill-heavy | 47.0 | 46.9 | -0.2% |
+| 1024/1024 | Balanced | 41.8 | 41.2 | -1.4% |
+| 128/1024 | Decode-heavy | 41.7 | 41.2 | -1.2% |
+
+### Memory comparison
+
+| Metric | v22 Marlin | v8 Sparse | Delta |
+|--------|----------:|----------:|------:|
+| Model memory | 44.2 GiB | 35.2 GiB | **-9.0 GiB (-20%)** |
+| Available KV cache | 62.2 GiB | 70.1 GiB | **+7.9 GiB (+13%)** |
+
+The v8 sparse kernel frees Marlin-repacked MoE weights after converting to the sparse format, saving 9 GiB of GPU memory. This extra memory is automatically reclaimed by vLLM's KV cache allocator, enabling more concurrent sequences or longer context without increasing GPU memory utilization.
+
+### TPOT comparison (ms, lower is better)
+
+| ISL/OSL | v22 Marlin | v8 Sparse | Delta |
+|---------|----------:|----------:|------:|
+| 128/128 | 21.39 | 21.52 | +0.6% |
+| 256/256 | 22.83 | 23.21 | +1.7% |
+| 1024/128 | 21.42 | 21.50 | +0.4% |
+| 1024/1024 | 23.96 | 24.30 | +1.4% |
+| 128/1024 | 24.02 | 24.28 | +1.1% |
 
 ### Optimization commits
 
@@ -349,6 +386,20 @@ docker run ... avarok/dgx-vllm-nvfp4-kernel:v22 bash         # Interactive shell
 | `fix_flashinfer_nvfp4_moe_backend.py` | MoE backend returns `None` | Return `k_cls` correctly |
 | `fix_mtp_nvfp4_exclusion.py` | MTP layers incorrectly quantized | Exclude `mtp.*` layers from NVFP4 |
 
+### Sparse FP4 kernel & benchmarking
+
+| File | Purpose |
+|------|---------|
+| `sparse_fp4_kernel/sparse_fp4_v8.cu` | v8 optimized GEMV kernel (vectorized loads, atomicAdd, pre-scaled LUT) |
+| `sparse_fp4_kernel/setup_v8.py` | Build script for v8 kernel (targets sm_120) |
+| `sparse_fp4_kernel/sparse_v8_moe_patch.py` | vLLM monkey-patch: replaces Marlin MoE with v8 sparse at runtime |
+| `sparse_fp4_kernel/vllm_serve_v8.py` | Serve wrapper: sets env vars, applies patch, starts vLLM |
+| `sparse_fp4_kernel/bench_full.py` | Full benchmark suite (Pareto frontier: TTFT/TPOT/throughput) |
+| `sparse_fp4_kernel/bench_quick.sh` | Quick benchmark (3 warmup + 8x200tok + 3x500tok) |
+| `sparse_fp4_kernel/bench_v22_marlin_baseline.json` | v22 Marlin reference results (14 ISL/OSL configs) |
+| `sparse_fp4_kernel/bench_v8_sparse_results.json` | v8 sparse kernel results (5 ISL/OSL configs) |
+| `sparse_fp4_kernel/bench_v7_v8.py` | Synthetic micro-benchmark comparing v7 vs v8 kernel |
+
 ### Runtime configuration
 
 | File | Purpose |
@@ -359,13 +410,14 @@ docker run ... avarok/dgx-vllm-nvfp4-kernel:v22 bash         # Interactive shell
 
 ## Build History
 
-| Version | Change | Throughput |
-|---------|--------|----------:|
-| v20 | Python software FP4 quant (Qwen3-80B) | 1.1 tok/s |
-| v21 | Software E2M1 in C++ + CUDA graphs | 35.0 tok/s |
-| v21 + Marlin | Marlin MoE + dense GEMM backends | 40.2 tok/s |
-| v21 + MTP | MTP speculative decoding (2 tokens) | 59.9 tok/s |
-| **v22** | **Pin vLLM, re-enable torch.compile, 64K benchmarks** | **~67 tok/s avg** |
+| Version | Change | Throughput | Model Memory |
+|---------|--------|----------:|-----------:|
+| v20 | Python software FP4 quant (Qwen3-80B) | 1.1 tok/s | — |
+| v21 | Software E2M1 in C++ + CUDA graphs | 35.0 tok/s | — |
+| v21 + Marlin | Marlin MoE + dense GEMM backends | 40.2 tok/s | 44.2 GiB |
+| v21 + MTP | MTP speculative decoding (2 tokens) | 59.9 tok/s | 44.2 GiB |
+| **v22** | **Pin vLLM, re-enable torch.compile, 64K benchmarks** | **~67 tok/s avg** | **44.2 GiB** |
+| **v8 Sparse** | **Sparse FP4 2:4 GEMV kernel (3 micro-opts)** | **~41 tok/s** | **35.2 GiB** |
 
 ---
 

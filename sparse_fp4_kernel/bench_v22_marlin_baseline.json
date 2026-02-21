@@ -1,0 +1,515 @@
+{
+  "model": "nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4",
+  "max_model_len": 65536,
+  "bench_runs": 3,
+  "cuda_graph_info": {
+    "compilation_mode": "VLLM_COMPILE",
+    "cudagraph_mode_requested": "FULL_AND_PIECEWISE",
+    "cudagraph_mode_actual": null,
+    "capture_sizes": [
+      1,
+      2,
+      4,
+      8,
+      16,
+      24,
+      32,
+      40,
+      48,
+      56,
+      64,
+      72,
+      80,
+      88,
+      96,
+      104,
+      112,
+      120,
+      128,
+      136,
+      144,
+      152,
+      160,
+      168,
+      176,
+      184,
+      192,
+      200,
+      208,
+      216,
+      224,
+      232,
+      240,
+      248,
+      256
+    ],
+    "num_graphs": 35
+  },
+  "test_matrix": [
+    {
+      "isl": 32768,
+      "osl": 256,
+      "label": "32k prefill stress"
+    },
+    {
+      "isl": 16384,
+      "osl": 512,
+      "label": "16k RAG / document"
+    },
+    {
+      "isl": 8192,
+      "osl": 1024,
+      "label": "8k summarization (SemiAnalysis)"
+    },
+    {
+      "isl": 4096,
+      "osl": 256,
+      "label": "4k short summary"
+    },
+    {
+      "isl": 1024,
+      "osl": 128,
+      "label": "vLLM default"
+    },
+    {
+      "isl": 128,
+      "osl": 128,
+      "label": "micro-benchmark baseline"
+    },
+    {
+      "isl": 256,
+      "osl": 256,
+      "label": "short balanced"
+    },
+    {
+      "isl": 1024,
+      "osl": 1024,
+      "label": "standard chat (vLLM/SGLang)"
+    },
+    {
+      "isl": 4096,
+      "osl": 4096,
+      "label": "4k balanced"
+    },
+    {
+      "isl": 8192,
+      "osl": 8192,
+      "label": "8k balanced"
+    },
+    {
+      "isl": 128,
+      "osl": 1024,
+      "label": "code generation"
+    },
+    {
+      "isl": 256,
+      "osl": 4096,
+      "label": "long-form reasoning"
+    },
+    {
+      "isl": 1024,
+      "osl": 8192,
+      "label": "1k\u21928k decode (SemiAnalysis)"
+    },
+    {
+      "isl": 256,
+      "osl": 16384,
+      "label": "max decode stress"
+    }
+  ],
+  "results": [
+    {
+      "regime": "prefill_heavy",
+      "label": "32k prefill stress",
+      "isl_target": 32768,
+      "osl_target": 256,
+      "isl_actual": 29155,
+      "osl_actual": 256,
+      "ttft_ms": {
+        "avg": 11482.6,
+        "min": 7737.3,
+        "max": 18942.0
+      },
+      "tpot_ms": {
+        "avg": 23.99,
+        "min": 22.69,
+        "max": 24.67
+      },
+      "decode_throughput": {
+        "avg": 41.9,
+        "min": 40.7,
+        "max": 44.2
+      },
+      "e2e_throughput": {
+        "avg": 15.6,
+        "min": 10.4,
+        "max": 18.3
+      }
+    },
+    {
+      "regime": "prefill_heavy",
+      "label": "16k RAG / document",
+      "isl_target": 16384,
+      "osl_target": 512,
+      "isl_actual": 14595,
+      "osl_actual": 512,
+      "ttft_ms": {
+        "avg": 3924.5,
+        "min": 3745.8,
+        "max": 4255.2
+      },
+      "tpot_ms": {
+        "avg": 24.88,
+        "min": 24.64,
+        "max": 25.07
+      },
+      "decode_throughput": {
+        "avg": 40.3,
+        "min": 40.0,
+        "max": 40.7
+      },
+      "e2e_throughput": {
+        "avg": 30.8,
+        "min": 30.0,
+        "max": 31.3
+      }
+    },
+    {
+      "regime": "prefill_heavy",
+      "label": "8k summarization (SemiAnalysis)",
+      "isl_target": 8192,
+      "osl_target": 1024,
+      "isl_actual": 7315,
+      "osl_actual": 1024,
+      "ttft_ms": {
+        "avg": 2069.4,
+        "min": 2005.4,
+        "max": 2187.2
+      },
+      "tpot_ms": {
+        "avg": 24.48,
+        "min": 24.45,
+        "max": 24.5
+      },
+      "decode_throughput": {
+        "avg": 40.9,
+        "min": 40.9,
+        "max": 40.9
+      },
+      "e2e_throughput": {
+        "avg": 37.8,
+        "min": 37.6,
+        "max": 37.9
+      }
+    },
+    {
+      "regime": "prefill_heavy",
+      "label": "4k short summary",
+      "isl_target": 4096,
+      "osl_target": 256,
+      "isl_actual": 3675,
+      "osl_actual": 256,
+      "ttft_ms": {
+        "avg": 1211.3,
+        "min": 1205.3,
+        "max": 1216.8
+      },
+      "tpot_ms": {
+        "avg": 23.14,
+        "min": 23.07,
+        "max": 23.26
+      },
+      "decode_throughput": {
+        "avg": 43.4,
+        "min": 43.2,
+        "max": 43.5
+      },
+      "e2e_throughput": {
+        "avg": 36.0,
+        "min": 35.9,
+        "max": 36.1
+      }
+    },
+    {
+      "regime": "prefill_heavy",
+      "label": "vLLM default",
+      "isl_target": 1024,
+      "osl_target": 128,
+      "isl_actual": 945,
+      "osl_actual": 128,
+      "ttft_ms": {
+        "avg": 636.7,
+        "min": 628.6,
+        "max": 647.0
+      },
+      "tpot_ms": {
+        "avg": 21.42,
+        "min": 21.41,
+        "max": 21.43
+      },
+      "decode_throughput": {
+        "avg": 47.0,
+        "min": 47.0,
+        "max": 47.1
+      },
+      "e2e_throughput": {
+        "avg": 38.1,
+        "min": 38.0,
+        "max": 38.2
+      }
+    },
+    {
+      "regime": "balanced",
+      "label": "micro-benchmark baseline",
+      "isl_target": 128,
+      "osl_target": 128,
+      "isl_actual": 145,
+      "osl_actual": 128,
+      "ttft_ms": {
+        "avg": 549.5,
+        "min": 496.8,
+        "max": 654.3
+      },
+      "tpot_ms": {
+        "avg": 21.39,
+        "min": 21.37,
+        "max": 21.42
+      },
+      "decode_throughput": {
+        "avg": 47.1,
+        "min": 47.0,
+        "max": 47.2
+      },
+      "e2e_throughput": {
+        "avg": 39.2,
+        "min": 37.9,
+        "max": 39.9
+      }
+    },
+    {
+      "regime": "balanced",
+      "label": "short balanced",
+      "isl_target": 256,
+      "osl_target": 256,
+      "isl_actual": 255,
+      "osl_actual": 256,
+      "ttft_ms": {
+        "avg": 532.5,
+        "min": 507.0,
+        "max": 574.5
+      },
+      "tpot_ms": {
+        "avg": 22.83,
+        "min": 22.8,
+        "max": 22.86
+      },
+      "decode_throughput": {
+        "avg": 44.0,
+        "min": 43.9,
+        "max": 44.0
+      },
+      "e2e_throughput": {
+        "avg": 40.3,
+        "min": 40.0,
+        "max": 40.5
+      }
+    },
+    {
+      "regime": "balanced",
+      "label": "standard chat (vLLM/SGLang)",
+      "isl_target": 1024,
+      "osl_target": 1024,
+      "isl_actual": 945,
+      "osl_actual": 1024,
+      "ttft_ms": {
+        "avg": 630.0,
+        "min": 625.6,
+        "max": 637.6
+      },
+      "tpot_ms": {
+        "avg": 23.96,
+        "min": 23.96,
+        "max": 23.98
+      },
+      "decode_throughput": {
+        "avg": 41.8,
+        "min": 41.7,
+        "max": 41.8
+      },
+      "e2e_throughput": {
+        "avg": 40.7,
+        "min": 40.7,
+        "max": 40.7
+      }
+    },
+    {
+      "regime": "balanced",
+      "label": "4k balanced",
+      "isl_target": 4096,
+      "osl_target": 4096,
+      "isl_actual": 3675,
+      "osl_actual": 4096,
+      "ttft_ms": {
+        "avg": 1274.5,
+        "min": 1202.5,
+        "max": 1405.2
+      },
+      "tpot_ms": {
+        "avg": 24.7,
+        "min": 24.68,
+        "max": 24.71
+      },
+      "decode_throughput": {
+        "avg": 40.5,
+        "min": 40.5,
+        "max": 40.5
+      },
+      "e2e_throughput": {
+        "avg": 40.0,
+        "min": 39.9,
+        "max": 40.0
+      }
+    },
+    {
+      "regime": "balanced",
+      "label": "8k balanced",
+      "isl_target": 8192,
+      "osl_target": 8192,
+      "isl_actual": 7315,
+      "osl_actual": 4588,
+      "ttft_ms": {
+        "avg": 2033.6,
+        "min": 2017.5,
+        "max": 2056.5
+      },
+      "tpot_ms": {
+        "avg": 24.89,
+        "min": 24.85,
+        "max": 24.92
+      },
+      "decode_throughput": {
+        "avg": 40.2,
+        "min": 40.1,
+        "max": 40.3
+      },
+      "e2e_throughput": {
+        "avg": 39.5,
+        "min": 39.4,
+        "max": 39.5
+      }
+    },
+    {
+      "regime": "decode_heavy",
+      "label": "code generation",
+      "isl_target": 128,
+      "osl_target": 1024,
+      "isl_actual": 145,
+      "osl_actual": 1024,
+      "ttft_ms": {
+        "avg": 619.6,
+        "min": 505.8,
+        "max": 737.7
+      },
+      "tpot_ms": {
+        "avg": 24.02,
+        "min": 23.96,
+        "max": 24.1
+      },
+      "decode_throughput": {
+        "avg": 41.7,
+        "min": 41.5,
+        "max": 41.8
+      },
+      "e2e_throughput": {
+        "avg": 40.6,
+        "min": 40.5,
+        "max": 40.8
+      }
+    },
+    {
+      "regime": "decode_heavy",
+      "label": "long-form reasoning",
+      "isl_target": 256,
+      "osl_target": 4096,
+      "isl_actual": 255,
+      "osl_actual": 4096,
+      "ttft_ms": {
+        "avg": 544.3,
+        "min": 520.4,
+        "max": 584.3
+      },
+      "tpot_ms": {
+        "avg": 24.38,
+        "min": 24.35,
+        "max": 24.41
+      },
+      "decode_throughput": {
+        "avg": 41.0,
+        "min": 41.0,
+        "max": 41.1
+      },
+      "e2e_throughput": {
+        "avg": 40.8,
+        "min": 40.7,
+        "max": 40.9
+      }
+    },
+    {
+      "regime": "decode_heavy",
+      "label": "1k\u21928k decode (SemiAnalysis)",
+      "isl_target": 1024,
+      "osl_target": 8192,
+      "isl_actual": 945,
+      "osl_actual": 4673,
+      "ttft_ms": {
+        "avg": 659.4,
+        "min": 637.4,
+        "max": 680.5
+      },
+      "tpot_ms": {
+        "avg": 24.46,
+        "min": 24.41,
+        "max": 24.51
+      },
+      "decode_throughput": {
+        "avg": 40.9,
+        "min": 40.8,
+        "max": 41.0
+      },
+      "e2e_throughput": {
+        "avg": 40.7,
+        "min": 40.6,
+        "max": 40.7
+      }
+    },
+    {
+      "regime": "decode_heavy",
+      "label": "max decode stress",
+      "isl_target": 256,
+      "osl_target": 16384,
+      "isl_actual": 255,
+      "osl_actual": 4956,
+      "ttft_ms": {
+        "avg": 523.6,
+        "min": 521.9,
+        "max": 526.7
+      },
+      "tpot_ms": {
+        "avg": 24.39,
+        "min": 24.37,
+        "max": 24.4
+      },
+      "decode_throughput": {
+        "avg": 41.0,
+        "min": 41.0,
+        "max": 41.0
+      },
+      "e2e_throughput": {
+        "avg": 40.8,
+        "min": 40.8,
+        "max": 40.9
+      }
+    }
+  ],
+  "timestamp": "2026-02-19T15:55:38"
+}
