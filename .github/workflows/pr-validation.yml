@@ -1,0 +1,70 @@
+name: PR Validation
+
+on:
+  pull_request:
+    branches: [master]
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  # Fast gate: verify every COPY source in the Dockerfile exists in the repo.
+  # Catches the exact class of bug from issue #1 in seconds.
+  check-copy-sources:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify all Dockerfile COPY sources exist
+        run: |
+          echo "Checking all COPY sources referenced in Dockerfile..."
+          errors=0
+          grep '^COPY ' Dockerfile | awk '{print $2}' | sort -u | while read src; do
+            if [ ! -e "$src" ]; then
+              echo "::error::COPY source missing: $src"
+              errors=$((errors + 1))
+            else
+              echo "  OK: $src"
+            fi
+          done
+          if [ $errors -gt 0 ]; then
+            echo "::error::$errors COPY source(s) missing from repo"
+            exit 1
+          fi
+          echo "All COPY sources verified."
+
+  # Full Docker build: proves the image compiles end-to-end.
+  # Uses layer caching so only changed layers rebuild on subsequent pushes.
+  docker-build:
+    needs: check-copy-sources
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: false
+
+      - name: Show available disk
+        run: df -h /
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          tags: dgx-vllm:pr-${{ github.event.pull_request.number }}
