@@ -68,8 +68,7 @@ nvfp4_*_stub*.cu
 nvfp4_stubs*.cu
 nvfp4_blockwise_moe_kernel_original.cu
 
-# Old CUTLASS kernel experiments
-cutlass_nvfp4/
+# Old CUTLASS kernel experiments (cutlass_nvfp4/ is NOT ignored — needed by Dockerfile)
 
 # Old documentation
 BENCHMARKS.md
