@@ -5,10 +5,10 @@ from setuptools import setup
 from torch.utils.cpp_extension import CUDAExtension, BuildExtension
 
 setup(
-    name="sparse_fp4_v7",
+    name="sparse_fp4_v8",
     ext_modules=[CUDAExtension(
-        "sparse_fp4_v7",
-        ["sparse_fp4_v7.cu"],
+        "sparse_fp4_v8",
+        ["sparse_fp4_v8.cu"],
         extra_compile_args={
             "nvcc": ["-O3", "--use_fast_math", "-arch=sm_120"]
         }

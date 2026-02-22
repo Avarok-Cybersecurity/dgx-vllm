@@ -7,17 +7,15 @@ echo "==========================================================================
 echo ""
 echo "This integration provides TRUE SM_121 kernels optimized for GB10:"
 echo "  • Native scaled_mm implementation (not SM89/SM100 fallback)"
-echo "  • Native MoE implementation"
 echo "  • Hardware-optimized for 301 GB/s LPDDR5X unified memory"
 echo "  • ClusterShape 1x1x1 (no multicast dependencies)"
 echo ""
 
 # =============================================================================
-# Step 1: Skip Custom GB10 MoE Kernel - Use SM100 Instead!
+# Step 1: MoE Strategy - Use SM100 Kernels
 # =============================================================================
-echo "[1/5] SKIPPING custom GB10 MoE kernel..."
-echo "   Strategy: Let SM_121 use standard SM100 MOE kernels"
-echo "   GB10 IS Blackwell - SM100 kernels should work!"
+echo "[1/5] Using standard SM100 MOE kernels for SM_121..."
+echo "   GB10 IS Blackwell - SM100 kernels work correctly"
 
 # Detect vLLM structure
 if [ -d "src/csrc/quantization/w8a8/cutlass/moe" ]; then

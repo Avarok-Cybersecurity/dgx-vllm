@@ -140,18 +140,18 @@ inline __device__ uint8_t _sw_float_to_e2m1_single(float v) {
     // E2M1: 1 sign + 2 exponent + 1 mantissa, bias=1
     // Values: 0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0
     uint32_t bits = __float_as_uint(v);
-    uint8_t sign = (bits >> 31) & 1;
-    float av = fabsf(v);
-    uint8_t e2m1;
-    if (av < 0.25f)       e2m1 = 0;         // 0
-    else if (av < 0.75f)  e2m1 = 1;         // 0.5
-    else if (av < 1.25f)  e2m1 = 2;         // 1.0
-    else if (av < 1.75f)  e2m1 = 3;         // 1.5
-    else if (av < 2.5f)   e2m1 = 4;         // 2.0
-    else if (av < 3.5f)   e2m1 = 5;         // 3.0
-    else if (av < 5.0f)   e2m1 = 6;         // 4.0
-    else                  e2m1 = 7;         // 6.0 (satfinite)
-    return (sign << 3) | e2m1;
+    uint8_t sign = (uint8_t)((bits >> 28) & 8u);
+    uint32_t abits = bits & 0x7FFFFFFFu;  // clear sign bit = fabs
+    // Branchless: sum of boolean comparisons on IEEE 754 bit pattern.
+    // All >= because original used all strict < thresholds.
+    uint8_t e2m1 = (abits >= 0x3E800000u)   // >= 0.25
+                 + (abits >= 0x3F400000u)   // >= 0.75
+                 + (abits >= 0x3FA00000u)   // >= 1.25
+                 + (abits >= 0x3FE00000u)   // >= 1.75
+                 + (abits >= 0x40200000u)   // >= 2.5
+                 + (abits >= 0x40600000u)   // >= 3.5
+                 + (abits >= 0x40A00000u);  // >= 5.0
+    return sign | e2m1;
 }
 
 inline __device__ uint8_t _sw_float2_to_e2m1x2(float lo, float hi) {

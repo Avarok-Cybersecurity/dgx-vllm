@@ -29,19 +29,21 @@ SW_E2M1_HELPER = r"""
 // ============================================================================
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 1210
 __device__ __forceinline__ uint8_t _sw_float_to_e2m1(float x) {
-  uint8_t sign = (uint8_t)((__float_as_uint(x) >> 28) & 8u);
-  float ax = fabsf(x);
-  uint8_t mag;
-  // Thresholds match hardware round-to-nearest-even behavior:
-  // At midpoints between representable values, round to value with M=0 (even).
-  if      (ax <= 0.25f)  mag = 0;  // 0.0   (code 000)
-  else if (ax <  0.75f)  mag = 1;  // 0.5   (code 001)
-  else if (ax <= 1.25f)  mag = 2;  // 1.0   (code 010)
-  else if (ax <  1.75f)  mag = 3;  // 1.5   (code 011)
-  else if (ax <= 2.5f)   mag = 4;  // 2.0   (code 100)
-  else if (ax <  3.5f)   mag = 5;  // 3.0   (code 101)
-  else if (ax <= 5.0f)   mag = 6;  // 4.0   (code 110)
-  else                    mag = 7;  // 6.0   (code 111) - satfinite
+  uint32_t bits = __float_as_uint(x);
+  uint8_t sign = (uint8_t)((bits >> 28) & 8u);
+  uint32_t abits = bits & 0x7FFFFFFFu;  // clear sign bit = fabs
+  // Branchless: sum of boolean comparisons on IEEE 754 bit pattern.
+  // Positive floats preserve ordering as unsigned integers, so float
+  // comparisons become integer comparisons. Each yields 0 or 1; the
+  // sum gives the E2M1 magnitude code directly (0-7).
+  // Alternating > / >= preserves round-to-nearest-even at midpoints.
+  uint8_t mag = (abits >  0x3E800000u)   // > 0.25
+              + (abits >= 0x3F400000u)   // >= 0.75
+              + (abits >  0x3FA00000u)   // > 1.25
+              + (abits >= 0x3FE00000u)   // >= 1.75
+              + (abits >  0x40200000u)   // > 2.5
+              + (abits >= 0x40600000u)   // >= 3.5
+              + (abits >  0x40A00000u);  // > 5.0
   return sign | mag;
 }
 

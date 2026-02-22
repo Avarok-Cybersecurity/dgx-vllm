@@ -1,23 +1,22 @@
-FROM nvidia/cuda:13.0.2-cudnn-devel-ubuntu24.04
-
 # ============================================================================
 # vLLM Docker Image for DGX Spark GB10
 # ============================================================================
-# Features:
-# - vLLM latest from main (auto-updated at build time)
-# - PyTorch stable with CUDA 13.0 (ARM64 compatible)
-# - Triton 3.6.0 with SM_121 support
-# - FlashInfer latest pre-release (patched for sm_121a)
-# - CUDA FP4 extension (custom headers + kernels for GB10)
-# - NVFP4 full compilation (software E2M1 for SM121, no stubs needed)
-# - GB10-optimized MoE Triton config (+65.7% throughput)
-# - SM_121 capability routing to SM_120 kernels
-# - CUTLASS FP8 disabled for SM_121 (PyTorch fallback)
-# - torch.compile RE-ENABLED for NVFP4 (v22: Marlin backend bypasses AutogradCUDA issue)
+# All versions are pinned in .env — build.sh passes them as --build-arg.
+# To build manually: docker build --build-arg VLLM_COMMIT=<sha> ...
 #
 # Build time: 30-60 minutes
 # Target: NVIDIA GB10 (sm_121, Compute Capability 12.1)
 # ============================================================================
+
+ARG BASE_IMAGE=nvidia/cuda:13.0.2-cudnn-devel-ubuntu24.04
+FROM ${BASE_IMAGE}
+
+# Build args sourced from .env via build.sh (with sensible defaults)
+ARG IMAGE_VERSION=22
+ARG VLLM_COMMIT=3b30e6150777de549b11f67dde3ecc0d3b1f3f50
+ARG TORCH_VERSION=2.10.0+cu130
+ARG TORCHVISION_VERSION=0.25.0+cu130
+ARG TORCHAUDIO_VERSION=2.10.0+cu130
 
 # Install essentials, InfiniBand/RDMA libraries, and network utilities
 RUN apt-get update && apt-get install -y \
@@ -54,11 +53,11 @@ RUN pip install flashinfer-python --pre
 ENV PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cu130
 
 # Reinstall PyTorch CUDA after flashinfer (which just downgraded it)
-RUN pip install torch==2.10.0+cu130 torchvision==0.25.0+cu130 torchaudio==2.10.0+cu130
+RUN pip install torch==${TORCH_VERSION} torchvision==${TORCHVISION_VERSION} torchaudio==${TORCHAUDIO_VERSION}
 
 # Clone vLLM (pinned to known-good revision for reproducible builds)
 RUN git clone https://github.com/vllm-project/vllm.git && \
-    cd vllm && git checkout 3b30e6150777de549b11f67dde3ecc0d3b1f3f50
+    cd vllm && git checkout ${VLLM_COMMIT}
 WORKDIR /app/vllm
 
 # Prepare for existing torch
@@ -111,13 +110,11 @@ fi
 # Integrate Native SM_121 Kernels for GB10 (NO FALLBACKS)
 # ============================================================================
 # Adds GB10-specific CUTLASS kernels optimized for SM_121:
-# - Native MoE kernel: grouped_mm_gb10_native.cu
 # - Native scaled_mm kernels: scaled_mm_sm121_fp8.cu + blockwise variant
 # - 1x1x1 cluster shape (no multicast support)
 # - 301 GB/s LPDDR5X unified memory optimizations
 # - Optimized tile sizes and scheduling for GB10 hardware
 # ============================================================================
-COPY grouped_mm_gb10_native.cu /workspace/dgx-vllm-build/grouped_mm_gb10_native.cu
 COPY scaled_mm_sm121_fp8.cu /workspace/dgx-vllm-build/scaled_mm_sm121_fp8.cu
 COPY scaled_mm_blockwise_sm121_fp8.cu /workspace/dgx-vllm-build/scaled_mm_blockwise_sm121_fp8.cu
 COPY scaled_mm_sm121_fp8_dispatch.cuh /workspace/dgx-vllm-build/scaled_mm_sm121_fp8_dispatch.cuh
@@ -128,12 +125,18 @@ COPY integrate_gb10_sm121.sh .
 RUN chmod +x integrate_gb10_sm121.sh && ./integrate_gb10_sm121.sh
 
 # ============================================================================
-# Integrate SM_121 FP8 Backend Fix
+# SM_121 FP8 Backend: torch._scaled_mm (cuBLAS) — CUTLASS is slower
 # ============================================================================
-# CRITICAL: Modify vLLM source BEFORE compilation
-# - Patches CUTLASS backend to return False for SM_121
-# - Forces fallback to PyTorch (torch._scaled_mm) which works on SM_121
-# - Updated for new vLLM scaled_mm architecture
+# Investigation on 2026-02-21 found the C++ CUTLASS FP8 dispatch chain is
+# 100% complete (SM100 kernels compiled for 12.1f, dispatcher routes CC 121).
+# However, benchmarking v23 showed CUTLASS SM100 kernels are ~7-10% SLOWER
+# than torch._scaled_mm (cuBLAS) on SM121:
+#   v22 (cuBLAS):  42.8-47.1 tok/s decode, 21.40-24.91ms TPOT
+#   v23 (CUTLASS): 37.6-42.8 tok/s decode, 23.54-26.61ms TPOT
+# Root cause: SM100 CUTLASS tile shapes are not optimized for GB10's 48 SMs
+# and 301 GB/s LPDDR5X bandwidth. cuBLAS has SM121-specific tuning.
+# Keeping the disable until SM121-optimized CUTLASS configs are available.
+# See SOFTWARE_EMULATIONS.md Rank 1 for full analysis.
 # ============================================================================
 COPY integrate_sm121_fp8_fix_v2.sh /workspace/dgx-vllm-build/integrate_sm121_fp8_fix_v2.sh
 RUN chmod +x /workspace/dgx-vllm-build/integrate_sm121_fp8_fix_v2.sh && \
@@ -223,13 +226,6 @@ RUN chmod +x /workspace/dgx-vllm-build/fix_dispatcher_flag_v115.sh && \
 # v134 fix is applied AFTER pip install (see below)
 
 # ============================================================================
-# GB10 Native MoE Kernel v109 (GeForce Blackwell Optimized)
-# ============================================================================
-COPY grouped_mm_gb10_native_v109.cu /workspace/dgx-vllm-build/grouped_mm_gb10_native_v109.cu
-COPY integrate_gb10_native_v109.sh .
-RUN chmod +x integrate_gb10_native_v109.sh && ./integrate_gb10_native_v109.sh
-
-# ============================================================================
 # CUDA FP4 Extension - Custom headers and test binaries for GB10
 # ============================================================================
 COPY cutlass_nvfp4 /workspace/dgx-vllm-build/cutlass_nvfp4
@@ -240,6 +236,21 @@ RUN chmod +x /workspace/dgx-vllm-build/integrate_cuda_fp4_extension.sh && \
 # FP4 tensor core env flags
 ENV ENABLE_TCGEN05_HARDWARE=1
 ENV NVCC_PREPEND_FLAGS="-DENABLE_TCGEN05_HARDWARE=1"
+
+# NVFP4 MoE backend tuning — set these at runtime via `docker run -e` to unlock faster paths:
+#
+#   Baseline (no vars):           ~36.4 tok/s  (CUTLASS MoE, default)
+#   + VLLM_NVFP4_GEMM_BACKEND=marlin
+#   + VLLM_TEST_FORCE_FP8_MARLIN=1
+#   + VLLM_USE_FLASHINFER_MOE_FP4=0  →  ~47 tok/s  (Marlin W4A16 dequant)
+#   + MTP speculative decoding       →  ~59.9 tok/s (Marlin + MTP 2 tokens)
+#   + PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True  →  reduces fragmentation
+#
+# Not baked into the image so users can benchmark each toggle incrementally.
+# ENV VLLM_TEST_FORCE_FP8_MARLIN=1
+# ENV VLLM_NVFP4_GEMM_BACKEND=marlin
+# ENV VLLM_USE_FLASHINFER_MOE_FP4=0
+# ENV PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # ============================================================================
 # GB10 Full NVFP4 Compilation v6 - ALL KERNELS (no stubs!)
@@ -305,16 +316,16 @@ ENV TORCH_NCCL_BLOCKING_WAIT=1
 # Install vLLM with local build (this takes a while)
 # Pin torch to cu130 via constraints to prevent pip from downgrading to CPU version.
 # Without this, vLLM's dependency resolution replaces torch+cu130 with torch (CPU).
-RUN echo "torch==2.10.0+cu130" > /tmp/constraints.txt && \
-    echo "torchvision==0.25.0+cu130" >> /tmp/constraints.txt && \
-    echo "torchaudio==2.10.0+cu130" >> /tmp/constraints.txt && \
+RUN echo "torch==${TORCH_VERSION}" > /tmp/constraints.txt && \
+    echo "torchvision==${TORCHVISION_VERSION}" >> /tmp/constraints.txt && \
+    echo "torchaudio==${TORCHAUDIO_VERSION}" >> /tmp/constraints.txt && \
     PIP_CONSTRAINT=/tmp/constraints.txt pip install --no-build-isolation -e . -v --pre
 
 # Fix PyTorch CUDA: vLLM pip install pulls torch from PyPI (CPU-only) despite
 # PIP_EXTRA_INDEX_URL. Force reinstall cu130 version. The CUDA extensions were
 # already compiled against CUDA torch (from our pre-build install), so the .so
 # files are compatible - only the Python package metadata needs fixing.
-RUN pip install torch==2.10.0+cu130 torchvision==0.25.0+cu130 torchaudio==2.10.0+cu130 \
+RUN pip install torch==${TORCH_VERSION} torchvision==${TORCHVISION_VERSION} torchaudio==${TORCHAUDIO_VERSION} \
     --index-url https://download.pytorch.org/whl/cu130 --force-reinstall --no-deps
 
 # ============================================================================
@@ -392,11 +403,10 @@ WORKDIR /app/vllm
 # Expose ports (vLLM API and Ray)
 EXPOSE 8888 6379
 
-# Version metadata
-LABEL version="22"
-LABEL build_date="2026-02-18"
-LABEL vllm_source="3b30e6150-patched"
-LABEL pytorch_version="stable-cu130"
+# Version metadata (populated from .env via build.sh --build-arg)
+LABEL version="${IMAGE_VERSION}"
+LABEL vllm_commit="${VLLM_COMMIT}"
+LABEL pytorch_version="${TORCH_VERSION}"
 LABEL compute_capability="12.1a-gb10"
 LABEL quantization_support="fp8-nvfp4"
 LABEL sm121_fp8_backend="torch-scaled-mm-fallback"
