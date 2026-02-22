@@ -1,0 +1,182 @@
+{
+  "model": "lukealonso/MiniMax-M2.5-NVFP4",
+  "max_model_len": 4096,
+  "bench_runs": 3,
+  "cuda_graph_info": {
+    "compilation_mode": null,
+    "cudagraph_mode_requested": null,
+    "cudagraph_mode_actual": null,
+    "capture_sizes": [],
+    "num_graphs": 0
+  },
+  "test_matrix": [
+    {
+      "isl": 1024,
+      "osl": 128,
+      "label": "vLLM default"
+    },
+    {
+      "isl": 128,
+      "osl": 128,
+      "label": "micro-benchmark baseline"
+    },
+    {
+      "isl": 256,
+      "osl": 256,
+      "label": "short balanced"
+    },
+    {
+      "isl": 1024,
+      "osl": 1024,
+      "label": "standard chat (vLLM/SGLang)"
+    },
+    {
+      "isl": 128,
+      "osl": 1024,
+      "label": "code generation"
+    }
+  ],
+  "results": [
+    {
+      "regime": "prefill_heavy",
+      "label": "vLLM default",
+      "isl_target": 1024,
+      "osl_target": 128,
+      "isl_actual": 974,
+      "osl_actual": 128,
+      "ttft_ms": {
+        "avg": 1849.3,
+        "min": 1498.1,
+        "max": 2438.3
+      },
+      "tpot_ms": {
+        "avg": 77.09,
+        "min": 69.1,
+        "max": 81.17
+      },
+      "decode_throughput": {
+        "avg": 13.1,
+        "min": 12.4,
+        "max": 14.6
+      },
+      "e2e_throughput": {
+        "avg": 11.0,
+        "min": 10.7,
+        "max": 11.4
+      }
+    },
+    {
+      "regime": "balanced",
+      "label": "micro-benchmark baseline",
+      "isl_target": 128,
+      "osl_target": 128,
+      "isl_actual": 174,
+      "osl_actual": 128,
+      "ttft_ms": {
+        "avg": 1304.9,
+        "min": 991.1,
+        "max": 1583.6
+      },
+      "tpot_ms": {
+        "avg": 60.29,
+        "min": 54.88,
+        "max": 64.01
+      },
+      "decode_throughput": {
+        "avg": 16.8,
+        "min": 15.7,
+        "max": 18.4
+      },
+      "e2e_throughput": {
+        "avg": 14.4,
+        "min": 13.2,
+        "max": 16.1
+      }
+    },
+    {
+      "regime": "balanced",
+      "label": "short balanced",
+      "isl_target": 256,
+      "osl_target": 256,
+      "isl_actual": 284,
+      "osl_actual": 256,
+      "ttft_ms": {
+        "avg": 1027.9,
+        "min": 966.8,
+        "max": 1122.6
+      },
+      "tpot_ms": {
+        "avg": 53.43,
+        "min": 52.65,
+        "max": 54.17
+      },
+      "decode_throughput": {
+        "avg": 18.8,
+        "min": 18.5,
+        "max": 19.1
+      },
+      "e2e_throughput": {
+        "avg": 17.5,
+        "min": 17.1,
+        "max": 17.8
+      }
+    },
+    {
+      "regime": "balanced",
+      "label": "standard chat (vLLM/SGLang)",
+      "isl_target": 1024,
+      "osl_target": 1024,
+      "isl_actual": 974,
+      "osl_actual": 1024,
+      "ttft_ms": {
+        "avg": 1175.4,
+        "min": 1043.2,
+        "max": 1364.5
+      },
+      "tpot_ms": {
+        "avg": 71.66,
+        "min": 61.09,
+        "max": 81.87
+      },
+      "decode_throughput": {
+        "avg": 14.2,
+        "min": 12.2,
+        "max": 16.4
+      },
+      "e2e_throughput": {
+        "avg": 13.9,
+        "min": 12.1,
+        "max": 16.1
+      }
+    },
+    {
+      "regime": "decode_heavy",
+      "label": "code generation",
+      "isl_target": 128,
+      "osl_target": 1024,
+      "isl_actual": 174,
+      "osl_actual": 1024,
+      "ttft_ms": {
+        "avg": 1374.7,
+        "min": 1048.1,
+        "max": 1800.0
+      },
+      "tpot_ms": {
+        "avg": 63.65,
+        "min": 60.6,
+        "max": 68.61
+      },
+      "decode_throughput": {
+        "avg": 15.8,
+        "min": 14.6,
+        "max": 16.5
+      },
+      "e2e_throughput": {
+        "avg": 15.4,
+        "min": 14.3,
+        "max": 16.2
+      }
+    }
+  ],
+  "timestamp": "2026-02-22T10:32:42"
+}

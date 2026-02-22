@@ -81,3 +81,9 @@ V14_*.md
 __pycache__/
 *.pyc
 *.pyo
+
+# Build artifacts
+*.so
+*.o
+*.egg-info/
+build/

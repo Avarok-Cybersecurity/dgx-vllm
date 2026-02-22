@@ -110,13 +110,11 @@ fi
 # Integrate Native SM_121 Kernels for GB10 (NO FALLBACKS)
 # ============================================================================
 # Adds GB10-specific CUTLASS kernels optimized for SM_121:
-# - Native MoE kernel: grouped_mm_gb10_native.cu
 # - Native scaled_mm kernels: scaled_mm_sm121_fp8.cu + blockwise variant
 # - 1x1x1 cluster shape (no multicast support)
 # - 301 GB/s LPDDR5X unified memory optimizations
 # - Optimized tile sizes and scheduling for GB10 hardware
 # ============================================================================
-COPY grouped_mm_gb10_native.cu /workspace/dgx-vllm-build/grouped_mm_gb10_native.cu
 COPY scaled_mm_sm121_fp8.cu /workspace/dgx-vllm-build/scaled_mm_sm121_fp8.cu
 COPY scaled_mm_blockwise_sm121_fp8.cu /workspace/dgx-vllm-build/scaled_mm_blockwise_sm121_fp8.cu
 COPY scaled_mm_sm121_fp8_dispatch.cuh /workspace/dgx-vllm-build/scaled_mm_sm121_fp8_dispatch.cuh
@@ -127,12 +125,18 @@ COPY integrate_gb10_sm121.sh .
 RUN chmod +x integrate_gb10_sm121.sh && ./integrate_gb10_sm121.sh
 
 # ============================================================================
-# Integrate SM_121 FP8 Backend Fix
+# SM_121 FP8 Backend: torch._scaled_mm (cuBLAS) — CUTLASS is slower
 # ============================================================================
-# CRITICAL: Modify vLLM source BEFORE compilation
-# - Patches CUTLASS backend to return False for SM_121
-# - Forces fallback to PyTorch (torch._scaled_mm) which works on SM_121
-# - Updated for new vLLM scaled_mm architecture
+# Investigation on 2026-02-21 found the C++ CUTLASS FP8 dispatch chain is
+# 100% complete (SM100 kernels compiled for 12.1f, dispatcher routes CC 121).
+# However, benchmarking v23 showed CUTLASS SM100 kernels are ~7-10% SLOWER
+# than torch._scaled_mm (cuBLAS) on SM121:
+#   v22 (cuBLAS):  42.8-47.1 tok/s decode, 21.40-24.91ms TPOT
+#   v23 (CUTLASS): 37.6-42.8 tok/s decode, 23.54-26.61ms TPOT
+# Root cause: SM100 CUTLASS tile shapes are not optimized for GB10's 48 SMs
+# and 301 GB/s LPDDR5X bandwidth. cuBLAS has SM121-specific tuning.
+# Keeping the disable until SM121-optimized CUTLASS configs are available.
+# See SOFTWARE_EMULATIONS.md Rank 1 for full analysis.
 # ============================================================================
 COPY integrate_sm121_fp8_fix_v2.sh /workspace/dgx-vllm-build/integrate_sm121_fp8_fix_v2.sh
 RUN chmod +x /workspace/dgx-vllm-build/integrate_sm121_fp8_fix_v2.sh && \
@@ -222,13 +226,6 @@ RUN chmod +x /workspace/dgx-vllm-build/fix_dispatcher_flag_v115.sh && \
 # v134 fix is applied AFTER pip install (see below)
 
 # ============================================================================
-# GB10 Native MoE Kernel v109 (GeForce Blackwell Optimized)
-# ============================================================================
-COPY grouped_mm_gb10_native_v109.cu /workspace/dgx-vllm-build/grouped_mm_gb10_native_v109.cu
-COPY integrate_gb10_native_v109.sh .
-RUN chmod +x integrate_gb10_native_v109.sh && ./integrate_gb10_native_v109.sh
-
-# ============================================================================
 # CUDA FP4 Extension - Custom headers and test binaries for GB10
 # ============================================================================
 COPY cutlass_nvfp4 /workspace/dgx-vllm-build/cutlass_nvfp4
@@ -239,6 +236,21 @@ RUN chmod +x /workspace/dgx-vllm-build/integrate_cuda_fp4_extension.sh && \
 # FP4 tensor core env flags
 ENV ENABLE_TCGEN05_HARDWARE=1
 ENV NVCC_PREPEND_FLAGS="-DENABLE_TCGEN05_HARDWARE=1"
+
+# NVFP4 MoE backend tuning — set these at runtime via `docker run -e` to unlock faster paths:
+#
+#   Baseline (no vars):           ~36.4 tok/s  (CUTLASS MoE, default)
+#   + VLLM_NVFP4_GEMM_BACKEND=marlin
+#   + VLLM_TEST_FORCE_FP8_MARLIN=1
+#   + VLLM_USE_FLASHINFER_MOE_FP4=0  →  ~47 tok/s  (Marlin W4A16 dequant)
+#   + MTP speculative decoding       →  ~59.9 tok/s (Marlin + MTP 2 tokens)
+#   + PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True  →  reduces fragmentation
+#
+# Not baked into the image so users can benchmark each toggle incrementally.
+# ENV VLLM_TEST_FORCE_FP8_MARLIN=1
+# ENV VLLM_NVFP4_GEMM_BACKEND=marlin
+# ENV VLLM_USE_FLASHINFER_MOE_FP4=0
+# ENV PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # ============================================================================
 # GB10 Full NVFP4 Compilation v6 - ALL KERNELS (no stubs!)

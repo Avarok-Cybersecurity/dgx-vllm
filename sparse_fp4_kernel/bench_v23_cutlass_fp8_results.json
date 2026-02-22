@@ -1,0 +1,218 @@
+{
+  "model": "nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4",
+  "max_model_len": 4096,
+  "bench_runs": 3,
+  "cuda_graph_info": {
+    "compilation_mode": "VLLM_COMPILE",
+    "cudagraph_mode_requested": "FULL_AND_PIECEWISE",
+    "cudagraph_mode_actual": null,
+    "capture_sizes": [
+      1,
+      2,
+      4,
+      8,
+      16,
+      24,
+      32,
+      40,
+      48,
+      56,
+      64,
+      72,
+      80,
+      88,
+      96,
+      104,
+      112,
+      120,
+      128,
+      136,
+      144,
+      152,
+      160,
+      168,
+      176,
+      184,
+      192,
+      200,
+      208,
+      216,
+      224,
+      232,
+      240,
+      248,
+      256
+    ],
+    "num_graphs": 35
+  },
+  "test_matrix": [
+    {
+      "isl": 1024,
+      "osl": 128,
+      "label": "vLLM default"
+    },
+    {
+      "isl": 128,
+      "osl": 128,
+      "label": "micro-benchmark baseline"
+    },
+    {
+      "isl": 256,
+      "osl": 256,
+      "label": "short balanced"
+    },
+    {
+      "isl": 1024,
+      "osl": 1024,
+      "label": "standard chat (vLLM/SGLang)"
+    },
+    {
+      "isl": 128,
+      "osl": 1024,
+      "label": "code generation"
+    }
+  ],
+  "results": [
+    {
+      "regime": "prefill_heavy",
+      "label": "vLLM default",
+      "isl_target": 1024,
+      "osl_target": 128,
+      "isl_actual": 945,
+      "osl_actual": 128,
+      "ttft_ms": {
+        "avg": 714.9,
+        "min": 695.9,
+        "max": 751.7
+      },
+      "tpot_ms": {
+        "avg": 23.98,
+        "min": 23.52,
+        "max": 24.9
+      },
+      "decode_throughput": {
+        "avg": 42.1,
+        "min": 40.5,
+        "max": 42.9
+      },
+      "e2e_throughput": {
+        "avg": 34.1,
+        "min": 32.7,
+        "max": 34.8
+      }
+    },
+    {
+      "regime": "balanced",
+      "label": "micro-benchmark baseline",
+      "isl_target": 128,
+      "osl_target": 128,
+      "isl_actual": 145,
+      "osl_actual": 128,
+      "ttft_ms": {
+        "avg": 536.9,
+        "min": 536.6,
+        "max": 537.4
+      },
+      "tpot_ms": {
+        "avg": 23.54,
+        "min": 23.52,
+        "max": 23.55
+      },
+      "decode_throughput": {
+        "avg": 42.8,
+        "min": 42.8,
+        "max": 42.9
+      },
+      "e2e_throughput": {
+        "avg": 36.3,
+        "min": 36.3,
+        "max": 36.3
+      }
+    },
+    {
+      "regime": "balanced",
+      "label": "short balanced",
+      "isl_target": 256,
+      "osl_target": 256,
+      "isl_actual": 255,
+      "osl_actual": 256,
+      "ttft_ms": {
+        "avg": 557.3,
+        "min": 553.0,
+        "max": 564.4
+      },
+      "tpot_ms": {
+        "avg": 25.16,
+        "min": 25.13,
+        "max": 25.18
+      },
+      "decode_throughput": {
+        "avg": 39.9,
+        "min": 39.9,
+        "max": 39.9
+      },
+      "e2e_throughput": {
+        "avg": 36.7,
+        "min": 36.7,
+        "max": 36.7
+      }
+    },
+    {
+      "regime": "balanced",
+      "label": "standard chat (vLLM/SGLang)",
+      "isl_target": 1024,
+      "osl_target": 1024,
+      "isl_actual": 945,
+      "osl_actual": 1024,
+      "ttft_ms": {
+        "avg": 701.8,
+        "min": 697.9,
+        "max": 704.7
+      },
+      "tpot_ms": {
+        "avg": 26.61,
+        "min": 26.55,
+        "max": 26.71
+      },
+      "decode_throughput": {
+        "avg": 37.6,
+        "min": 37.5,
+        "max": 37.7
+      },
+      "e2e_throughput": {
+        "avg": 36.7,
+        "min": 36.5,
+        "max": 36.7
+      }
+    },
+    {
+      "regime": "decode_heavy",
+      "label": "code generation",
+      "isl_target": 128,
+      "osl_target": 1024,
+      "isl_actual": 145,
+      "osl_actual": 1024,
+      "ttft_ms": {
+        "avg": 544.6,
+        "min": 540.7,
+        "max": 547.4
+      },
+      "tpot_ms": {
+        "avg": 26.61,
+        "min": 26.54,
+        "max": 26.71
+      },
+      "decode_throughput": {
+        "avg": 37.6,
+        "min": 37.5,
+        "max": 37.7
+      },
+      "e2e_throughput": {
+        "avg": 36.9,
+        "min": 36.7,
+        "max": 37.0
+      }
+    }
+  ],
+  "timestamp": "2026-02-21T17:31:02"
+}
