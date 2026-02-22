@@ -34,6 +34,9 @@ case "$MODE" in
     echo "=== Starting Ray Head Node ==="
     echo "Node IP: ${NODE_IP}"
 
+    # Export VLLM_HOST_IP so Ray worker actors on this node use the correct IP
+    export VLLM_HOST_IP="${NODE_IP}"
+
     # Start Ray head node
     ray start --head \
       --node-ip-address="${NODE_IP}" \
@@ -57,6 +60,9 @@ case "$MODE" in
       echo "ERROR: HEAD_IP environment variable must be set for ray-worker mode"
       exit 1
     fi
+
+    # Export VLLM_HOST_IP so Ray worker actors on this node use the correct IP
+    export VLLM_HOST_IP="${NODE_IP}"
 
     # Start Ray worker node
     ray start \
