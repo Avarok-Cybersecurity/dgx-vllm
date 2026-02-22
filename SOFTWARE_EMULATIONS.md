@@ -12,7 +12,7 @@ which ones could be replaced with native hardware paths.
 | Rank | Software Emulation | Impact | HW Fix Available? | Implemented in Image? | Effort | Files |
 |------|-------------------|--------|--------------------|-----------------------|--------|-------|
 | 1 | FP8 CUTLASS scaled_mm disabled → `torch._scaled_mm` | HIGH | YES — but cuBLAS is 7-10% faster | **No** (CUTLASS slower than cuBLAS on SM121) | N/A | `integrate_sm121_fp8_fix_v2.sh` |
-| 2 | Software E2M1 float→FP4 conversion (7 branches/value) | HIGH | MAYBE — need latest ptxas for `sm_121a` | **Partial** — software fallback works, 32x recovery from broken state | Medium | `patch_nvfp4_utils_sw_e2m1.py`, `fix_flashinfer_e2m1_sm121.py` |
+| 2 | Software E2M1 float→FP4 conversion (branchless) | HIGH | MAYBE — need latest ptxas for `sm_121a` | **Yes** — branchless integer comparison sum, 32x recovery from broken state | Done | `patch_nvfp4_utils_sw_e2m1.py`, `fix_flashinfer_e2m1_sm121.py` |
 | 3 | FP4 GEMV via scalar CUDA cores + LUT dequant | MED-HIGH | YES — `mma.sync` FP4 tensor cores, cuSPARSELt | **No** (v8 kernel uses CUDA cores) | High | `sparse_fp4_kernel/sparse_fp4_v8.cu` |
 | 4 | NVFP4 full-emulation backend (Python dequant+matmul) | MEDIUM | YES — should never activate | **Yes** — Marlin/CUTLASS backends active by default | Low | `fix_nvfp4_emulation_backend.py` |
 | 5 | `nv_fp4_dummy.h` software FP4 type system | MEDIUM | PARTIAL — awaiting NVIDIA `cuda_fp4.h` | **Yes** — dummy types injected at build | Low | `nv_fp4_dummy.h`, `patch_cccl_fp4.sh` |
@@ -118,24 +118,39 @@ custom kernel tuning.
 
 ### Rank 2: Software E2M1 Conversion
 
-**Status**: Working software fallback. Hardware instruction confirmed missing on SM121.
+**Status**: Optimized — branchless integer comparison sum. Hardware instruction confirmed missing on SM121.
 
 SM121 lacks the `cvt.rn.satfinite.e2m1x2.f32` PTX instruction for float→E2M1 (FP4)
 conversion. Three separate software E2M1 implementations are deployed:
 
-1. **vLLM `nvfp4_utils.cuh`** — 7 `fabsf` comparisons + branches per value
+1. **vLLM `nvfp4_utils.cuh`** — Branchless comparison sum with round-to-nearest-even
    (`patch_nvfp4_utils_sw_e2m1.py`)
-2. **FlashInfer `float_subbyte.h`** — SM121 excluded from `CUDA_PTX_FP4FP6_CVT_ENABLED`
+2. **FlashInfer `quantization_utils.cuh`** — Branchless comparison sum
    (`fix_flashinfer_e2m1_sm121.py`)
 3. **Host FP4 types** — Threshold-based conversion intrinsics (`nv_fp4_dummy.h`)
 
 The software path runs during activation quantization (every forward pass for NVFP4),
 not during the GEMM itself (which uses native `mma.sync` E2M1 tensor core operations).
 
-**Optimization opportunity**: The 7-branch threshold comparison could be replaced with
-branchless bit manipulation using `__float_as_uint()` + shift/mask on the IEEE 754
-exponent and mantissa fields. A 256-entry LUT indexed by the top 8 bits would also
-eliminate all branches.
+**Optimization applied**: The original 7-branch `if/else if` chain caused warp divergence
+when threads quantized values spanning different E2M1 buckets. Replaced with a branchless
+sum of boolean integer comparisons on the IEEE 754 bit pattern:
+
+```cuda
+uint32_t abits = __float_as_uint(x) & 0x7FFFFFFFu;  // abs via bit clear
+uint8_t mag = (abits >  0x3E800000u)   // > 0.25
+            + (abits >= 0x3F400000u)   // >= 0.75
+            + (abits >  0x3FA00000u)   // > 1.25
+            + (abits >= 0x3FE00000u)   // >= 1.75
+            + (abits >  0x40200000u)   // > 2.5
+            + (abits >= 0x40600000u)   // >= 3.5
+            + (abits >  0x40A00000u);  // > 5.0
+```
+
+Each comparison generates a `SETP`+`SEL`+`IADD` instruction sequence — all executed uniformly
+by every thread in a warp, with zero divergence. The alternating `>`/`>=` preserves
+round-to-nearest-even at midpoints. Positive IEEE 754 floats preserve ordering as unsigned
+integers, making the bit-pattern comparisons correct.
 
 ---
 
@@ -284,9 +299,8 @@ These should be upstreamed to vLLM/FlashInfer so SM121 is recognized natively.
    kernels are 7-10% slower than cuBLAS on SM121. cuBLAS has better SM121-specific tuning.
    Future: custom SM121 CUTLASS tile shapes could help.
 
-2. **Optimize software E2M1** (Rank 2) — Replace 7-branch threshold comparison with
-   branchless bit manipulation. Re-test `cvt.rn.satfinite.e2m1x2.f32` with latest
-   CUDA ptxas to check if SM121a support has been added.
+2. **~~Optimize software E2M1~~** (Rank 2) — DONE. Replaced 7-branch threshold comparison
+   with branchless integer comparison sum. Zero warp divergence.
 
 3. **CUTLASS Sparse GEMM for BS≥2** (Rank 3) — With MTP speculative decode giving
    effective batch size 2-3, tensor cores operate at full efficiency. This is the
@@ -300,4 +314,4 @@ These should be upstreamed to vLLM/FlashInfer so SM121 is recognized natively.
 
 ---
 
-**Last Updated**: 2026-02-21
+**Last Updated**: 2026-02-22
