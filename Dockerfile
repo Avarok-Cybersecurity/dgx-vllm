@@ -352,6 +352,19 @@ COPY fix_qwen3_next_prefix.py /workspace/dgx-vllm-build/fix_qwen3_next_prefix.py
 RUN python3 /workspace/dgx-vllm-build/fix_qwen3_next_prefix.py
 
 # ============================================================================
+# Fix Qwen3.5 reasoning routing when thinking is toggled (MUST be AFTER pip install)
+# ============================================================================
+# Qwen3.5 can reopen thinking at request time via chat_template_kwargs, but
+# older parser logic leaks reasoning text into `content` because generated
+# deltas often start after a prompt-prefilled `<think>` token. Patch the parser
+# so disabled-thinking stays content-only and explicit thinking routes through
+# `reasoning` / `delta.reasoning`.
+# Validated on: Sehyo/Qwen3.5-35B-A3B-NVFP4
+# ============================================================================
+COPY fix_qwen35_reasoning_parser.py /workspace/dgx-vllm-build/fix_qwen35_reasoning_parser.py
+RUN python3 /workspace/dgx-vllm-build/fix_qwen35_reasoning_parser.py
+
+# ============================================================================
 # Fix NVFP4 EMULATION backend dequantization (MUST be AFTER pip install)
 # ============================================================================
 # Two bugs in run_nvfp4_emulations():
