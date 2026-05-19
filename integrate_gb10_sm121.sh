@@ -19,15 +19,31 @@ echo "[1/5] SKIPPING custom GB10 MoE kernel..."
 echo "   Strategy: Let SM_121 use standard SM100 MOE kernels"
 echo "   GB10 IS Blackwell - SM100 kernels should work!"
 
-# Detect vLLM structure
-if [ -d "src/csrc/quantization/w8a8/cutlass/moe" ]; then
+# Detect vLLM structure. v0.20.0 moved CUTLASS scaled_mm into
+# csrc/libtorch_stable/quantization/* and switched to torch::stable::Tensor /
+# STD_TORCH_CHECK / scalar_type() in the public ABI. Our SM_121 native kernel
+# sources predate that move and are still written against torch::Tensor /
+# TORCH_CHECK / dtype(), so they will not compile against libtorch_stable's
+# header. Until those kernels are ported to the stable ABI we skip the SM_121
+# native scaled_mm integration on v0.20+ — SM_121 falls back to SM_120 kernels
+# (which we already enable via the CMake arch patches) and to torch._scaled_mm
+# via integrate_sm121_fp8_fix_v2.sh. For the NVFP4-only workload we target
+# (RedHatAI/Qwen3.6-35B-A3B-NVFP4) this path is not on the hot loop anyway.
+if [ -d "csrc/libtorch_stable/quantization/w8a8/cutlass/moe" ]; then
+    echo "Detected libtorch_stable structure (vLLM >= v0.20.0)"
+    echo "SKIPPING SM_121 native scaled_mm kernel integration — needs torch::stable::Tensor port."
+    echo "SM_121 will fall back to SM_120 kernels (compiled via CMake arch patches)."
+    exit 0
+elif [ -d "src/csrc/quantization/w8a8/cutlass/moe" ]; then
     SCALED_MM_DIR="src/csrc/quantization/w8a8/cutlass"
     DISPATCHER_FILE="src/csrc/quantization/w8a8/cutlass/scaled_mm_entry.cu"
+    SCALED_MM_TARGET="_C"
     echo "Using src/ prefix structure"
 elif [ -d "csrc/quantization/w8a8/cutlass/moe" ]; then
     SCALED_MM_DIR="csrc/quantization/w8a8/cutlass"
     DISPATCHER_FILE="csrc/quantization/w8a8/cutlass/scaled_mm_entry.cu"
-    echo "Using direct csrc/ structure"
+    SCALED_MM_TARGET="_C"
+    echo "Using direct csrc/ structure (vLLM <= v0.19.x)"
 else
     echo "ERROR: vLLM directory not found"
     exit 1
@@ -137,7 +153,11 @@ echo "   Skipping custom GB10 MoE kernel - will use SM100"
 if grep -q "SM121_ARCHS" CMakeLists.txt; then
     echo "⚠ SM_121 scaled_mm kernel already in CMakeLists.txt"
 else
-    # Build CMake block with detected paths
+    # Build CMake block with detected paths and target.
+    # We use target_sources() (post-target-creation) instead of list(APPEND VLLM_*_EXT_SRC)
+    # because v0.20.0 splits sources between two targets (_C and _C_stable_libtorch)
+    # and append-to-end runs after both define_extension_target() calls. target_sources()
+    # works against an already-defined target, which is what we have at file end.
     SM121_BLOCK="
 # ============================================================================
 # SM_121 Native Scaled MM Kernels (GB10 - Compute Capability 12.1)
@@ -152,26 +172,25 @@ if(\${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.8 AND SM121_ARCHS)
   set_gencode_flags_for_srcs(
     SRCS \"\${SM121_SRCS}\"
     CUDA_ARCHS \"\${SM121_ARCHS}\")
-  list(APPEND VLLM_EXT_SRC \"\${SM121_SRCS}\")
+  if(TARGET ${SCALED_MM_TARGET})
+    target_sources(${SCALED_MM_TARGET} PRIVATE \"\${SM121_SRCS}\")
+    target_compile_definitions(${SCALED_MM_TARGET} PRIVATE ENABLE_SCALED_MM_SM121=1)
+  else()
+    list(APPEND VLLM_EXT_SRC \"\${SM121_SRCS}\")
+  endif()
   list(APPEND VLLM_GPU_FLAGS \"-DENABLE_SCALED_MM_SM121=1\")
   message(STATUS \"✓ SM_121 native scaled_mm kernels enabled\")
 endif()
 "
 
-    # Insert before the target_link_libraries or add_library line that creates _C target
-    # This ensures the SM_121 sources are added before the library is built
-    ANCHOR_LINE=$(grep -n 'define_gpu_extension_target' CMakeLists.txt | head -1 | cut -d: -f1)
-
-    if [ -n "$ANCHOR_LINE" ]; then
-        # Insert SM_121 block before the gpu extension target definition
-        INSERT_AT=$((ANCHOR_LINE - 1))
-        echo "$SM121_BLOCK" | sed -i "${INSERT_AT}r /dev/stdin" CMakeLists.txt
-        echo "SM_121 section inserted at line $INSERT_AT (before define_gpu_extension_target)"
-    else
-        # Fallback: append to end of CMakeLists.txt (CMake processes all before building)
-        echo "$SM121_BLOCK" >> CMakeLists.txt
-        echo "SM_121 section appended to end of CMakeLists.txt (fallback)"
-    fi
+    # Append to end of CMakeLists.txt. By the time CMake gets there, both _C
+    # and _C_stable_libtorch are defined, so the `if(TARGET ...)` guard in the
+    # block can dispatch to the right target via target_sources(). Inserting
+    # earlier (before the first define_extension_target) leaves both targets
+    # undefined and would silently route the kernels into VLLM_EXT_SRC (target
+    # _C) instead of _C_stable_libtorch — wrong target on v0.20+.
+    echo "$SM121_BLOCK" >> CMakeLists.txt
+    echo "SM_121 section appended to end of CMakeLists.txt (target=$SCALED_MM_TARGET)"
 
     # Verify
     if grep -q "SM_121 Native Scaled MM Kernels" CMakeLists.txt; then

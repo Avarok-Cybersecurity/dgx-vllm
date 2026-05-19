@@ -20,6 +20,9 @@ env:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # softprops/action-gh-release needs this on tag pushes
+      id-token: write   # OIDC token for cosign keyless signing
 
     steps:
       - name: Checkout code
@@ -64,6 +67,7 @@ jobs:
             type=raw,value=${{ steps.version.outputs.build_date }},enable={{is_default_branch}}
 
       - name: Build and push Docker image
+        id: build
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -78,7 +82,28 @@ jobs:
             VERSION=${{ steps.version.outputs.version }}
 
       - name: Image digest
-        run: echo ${{ steps.meta.outputs.digest }}
+        run: echo "${{ steps.build.outputs.digest }}"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: 'v2.4.1'
+
+      - name: Sign image with cosign (keyless OIDC)
+        # Signs the manifest digest -- all tags pointing at the same digest
+        # are covered by one signature. Keyless OIDC means no secrets to manage;
+        # the signing cert is bound to the workflow + commit via Fulcio/Rekor.
+        #
+        # Consumers can verify with:
+        #   cosign verify avarok/vllm-dgx-spark:v22 \
+        #     --certificate-identity-regexp "^https://github\.com/Avarok-Cybersecurity/dgx-vllm/" \
+        #     --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+        run: |
+          cosign sign --yes \
+            "${IMAGE}@${DIGEST}"
+        env:
+          IMAGE: ${{ env.DOCKER_HUB_REPO }}
+          DIGEST: ${{ steps.build.outputs.digest }}
 
       - name: Create GitHub Release (on tag)
         if: startsWith(github.ref, 'refs/tags/v')

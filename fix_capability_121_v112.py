@@ -72,17 +72,25 @@ if __name__ == '__main__':
     print(f"vLLM root: {vllm_root}")
     print()
 
-    # Only patch the primary dispatcher - other files already handle 121 upstream
-    primary = os.path.join(vllm_root, 'csrc/quantization/w8a8/cutlass/scaled_mm_entry.cu')
+    # v0.20.0 moved scaled_mm_entry.cu into csrc/libtorch_stable/. Try the new
+    # path first, then fall back to the legacy path so this script continues to
+    # work on older vllm versions.
+    candidates = [
+        os.path.join(vllm_root, 'csrc/libtorch_stable/quantization/w8a8/cutlass/scaled_mm_entry.cu'),
+        os.path.join(vllm_root, 'csrc/quantization/w8a8/cutlass/scaled_mm_entry.cu'),
+    ]
+    primary = next((p for p in candidates if os.path.exists(p)), None)
 
-    if os.path.exists(primary):
-        fixed = fix_scaled_mm_entry(primary)
-        if fixed:
-            print("\nCapability 121 will now route to SM_120 kernels.")
-        else:
-            print("\nAlready patched or no changes needed.")
-    else:
-        print(f"ERROR: Primary dispatcher not found: {primary}")
+    if primary is None:
+        print("ERROR: Primary dispatcher not found. Tried:")
+        for c in candidates:
+            print(f"  - {c}")
         sys.exit(1)
+
+    fixed = fix_scaled_mm_entry(primary)
+    if fixed:
+        print("\nCapability 121 will now route to SM_120 kernels.")
+    else:
+        print("\nAlready patched or no changes needed.")
 
     print("=" * 70)

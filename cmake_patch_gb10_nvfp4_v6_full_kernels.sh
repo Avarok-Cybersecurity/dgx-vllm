@@ -23,11 +23,27 @@ set -e
 VLLM_DIR="/app/vllm"
 cd "$VLLM_DIR"
 
+# Detect csrc layout. v0.20.0 moved csrc/quantization/fp4/* into
+# csrc/libtorch_stable/quantization/fp4/* and renamed the build target
+# from _C to _C_stable_libtorch. Older versions kept everything in _C.
+if [ -d "csrc/libtorch_stable/quantization/fp4" ]; then
+    NVFP4_DIR="csrc/libtorch_stable/quantization/fp4"
+    NVFP4_TARGET="_C_stable_libtorch"
+    echo "Using libtorch_stable structure (vLLM >= v0.20.0), target=${NVFP4_TARGET}"
+elif [ -d "csrc/quantization/fp4" ]; then
+    NVFP4_DIR="csrc/quantization/fp4"
+    NVFP4_TARGET="_C"
+    echo "Using legacy structure (vLLM <= v0.19.x), target=${NVFP4_TARGET}"
+else
+    echo "ERROR: Neither csrc/libtorch_stable/quantization/fp4 nor csrc/quantization/fp4 found"
+    exit 1
+fi
+
 echo "Patching CMakeLists.txt for FULL NVFP4 kernel compilation on GB10..."
 
-# NOTE: No stubs appended! All symbols are provided by real compiled kernels.
-
-cat >> CMakeLists.txt << 'CMAKE_PATCH'
+# Use unquoted heredoc so $NVFP4_DIR and $NVFP4_TARGET expand at script time.
+# CMake variables (\${VAR}) are escaped to keep them as CMake-time substitution.
+cat >> CMakeLists.txt << CMAKE_PATCH
 
 # ============================================================================
 # CUSTOM: GB10 Full NVFP4 Compilation v6 (ALL KERNELS - no stubs!)
@@ -36,54 +52,52 @@ cat >> CMakeLists.txt << 'CMAKE_PATCH'
 # All quant kernels compile for SM121 using this software path.
 # MoE GEMM and scaled_mm kernels use CUTLASS mma.e2m1 (always worked).
 #
-# This eliminates:
-# - Python software FP4 quantization fallback (gb10_nvfp4_software_quant.py)
-# - Quant function stubs (nvfp4_stubs.cu)
-# - .item() calls in Python per-expert loop
-# - CUDA graph capture failures (cudaErrorStreamCaptureUnsupported)
+# In vLLM v0.20.0+, the kernel files moved into csrc/libtorch_stable/
+# and got built into target _C_stable_libtorch instead of _C. This script
+# detects the layout at run time so it works against either tag.
 # ============================================================================
 
-if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.8)
-  message(STATUS "GB10 Custom v6: Compiling ALL NVFP4 kernels for sm_121")
+if(\${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.8)
+  message(STATUS "GB10 Custom v6: Compiling ALL NVFP4 kernels for sm_121 (target: ${NVFP4_TARGET})")
 
-  # Entry files are ALREADY in VLLM_EXT_SRC (added at line ~344).
+  # Entry files are already added to the target's source list upstream.
   set(GB10_NVFP4_ENTRY_FILES
-    "csrc/quantization/fp4/nvfp4_quant_entry.cu"
-    "csrc/quantization/fp4/nvfp4_scaled_mm_entry.cu"
+    "${NVFP4_DIR}/nvfp4_quant_entry.cu"
+    "${NVFP4_DIR}/nvfp4_scaled_mm_entry.cu"
   )
 
-  # ALL kernel files - none need stubs anymore!
-  # Quant kernels now compile because nvfp4_utils.cuh has software E2M1.
-  # MoE GEMM and scaled_mm use CUTLASS BlockScaled MMA (always worked).
+  # Kernel files compile for sm_121 thanks to the software-E2M1 patch in
+  # nvfp4_utils.cuh. MoE GEMM and scaled_mm use CUTLASS BlockScaled MMA.
   set(GB10_NVFP4_KERNEL_FILES
-    "csrc/quantization/fp4/nvfp4_quant_kernels.cu"
-    "csrc/quantization/fp4/nvfp4_experts_quant.cu"
-    "csrc/quantization/fp4/activation_nvfp4_quant_fusion_kernels.cu"
-    "csrc/quantization/fp4/nvfp4_blockwise_moe_kernel.cu"
-    "csrc/quantization/fp4/nvfp4_scaled_mm_sm120_kernels.cu"
+    "${NVFP4_DIR}/nvfp4_quant_kernels.cu"
+    "${NVFP4_DIR}/nvfp4_experts_quant.cu"
+    "${NVFP4_DIR}/activation_nvfp4_quant_fusion_kernels.cu"
+    "${NVFP4_DIR}/nvfp4_blockwise_moe_kernel.cu"
+    "${NVFP4_DIR}/nvfp4_scaled_mm_sm120_kernels.cu"
   )
 
-  # Combine for setting properties
-  set(GB10_NVFP4_ALL_FILES ${GB10_NVFP4_ENTRY_FILES} ${GB10_NVFP4_KERNEL_FILES})
+  set(GB10_NVFP4_ALL_FILES \${GB10_NVFP4_ENTRY_FILES} \${GB10_NVFP4_KERNEL_FILES})
 
-  # Set arch to sm_121 for all files
   set_gencode_flags_for_srcs(
-    SRCS "${GB10_NVFP4_ALL_FILES}"
+    SRCS "\${GB10_NVFP4_ALL_FILES}"
     CUDA_ARCHS "12.1"
   )
 
-  # Set compile definition on all files
   set_source_files_properties(
-    ${GB10_NVFP4_ALL_FILES}
+    \${GB10_NVFP4_ALL_FILES}
     PROPERTIES
     COMPILE_DEFINITIONS "ENABLE_NVFP4_SM120=1"
   )
 
-  # Add kernel files to the _C target directly (target already exists)
-  target_sources(_C PRIVATE ${GB10_NVFP4_KERNEL_FILES})
+  # Add kernel files to the actual build target (already defined at this point).
+  if(TARGET ${NVFP4_TARGET})
+    target_sources(${NVFP4_TARGET} PRIVATE \${GB10_NVFP4_KERNEL_FILES})
+    target_compile_definitions(${NVFP4_TARGET} PRIVATE ENABLE_NVFP4_SM120=1)
+  else()
+    message(WARNING "GB10 Custom v6: target ${NVFP4_TARGET} not defined, skipping")
+  endif()
 
   message(STATUS "GB10 Custom v6: ALL kernel files compiled with sm_121 + ENABLE_NVFP4_SM120")
-  message(STATUS "GB10 Custom v6: No stubs needed - software E2M1 in nvfp4_utils.cuh")
 endif()
 
 # ============================================================================
@@ -91,11 +105,6 @@ endif()
 CMAKE_PATCH
 
 echo "CMakeLists.txt patched for full NVFP4 kernel compilation!"
-echo "  nvfp4_quant_entry.cu: vLLM original (NO stubs)"
-echo "  nvfp4_scaled_mm_entry.cu: vLLM original (NO stubs)"
-echo "  nvfp4_quant_kernels.cu: Activation FP4 quant (software E2M1)"
-echo "  nvfp4_experts_quant.cu: Per-expert FP4 quant (software E2M1)"
-echo "  activation_nvfp4_quant_fusion_kernels.cu: SiLU+Mul+FP4 quant"
-echo "  nvfp4_blockwise_moe_kernel.cu: CUTLASS FP4 MoE GEMM"
-echo "  nvfp4_scaled_mm_sm120_kernels.cu: CUTLASS FP4 GEMM"
+echo "  Source dir: ${NVFP4_DIR}"
+echo "  Build target: ${NVFP4_TARGET}"
 echo "  Flag: ENABLE_NVFP4_SM120=1"

@@ -22,11 +22,22 @@ echo ""
 # =============================================================================
 echo "[1/5] Detecting vLLM directory structure..."
 
-if [ -d "src/csrc/quantization/w8a8/cutlass/moe" ]; then
+if [ -d "csrc/libtorch_stable/quantization/w8a8/cutlass/moe" ]; then
+    # Same reason as integrate_gb10_sm121.sh: the v109 source is written
+    # against torch::Tensor / TORCH_CHECK and does not compile against
+    # libtorch_stable's torch::stable::Tensor API. The Qwen3.6-35B-A3B-NVFP4
+    # workload uses NVFP4 MoE GEMMs (covered by the v6 NVFP4 kernel patch),
+    # not FP8 grouped GEMM, so skipping v109 here is safe.
+    echo "Detected libtorch_stable structure (vLLM >= v0.20.0)"
+    echo "SKIPPING GB10 v109 MoE kernel integration — needs torch::stable::Tensor port."
+    exit 0
+elif [ -d "src/csrc/quantization/w8a8/cutlass/moe" ]; then
     MOE_DIR="src/csrc/quantization/w8a8/cutlass/moe"
+    MOE_TARGET="_C"
     echo "Using src/ prefix structure"
 elif [ -d "csrc/quantization/w8a8/cutlass/moe" ]; then
     MOE_DIR="csrc/quantization/w8a8/cutlass/moe"
+    MOE_TARGET="_C"
     echo "Using direct csrc/ structure"
 else
     echo "ERROR: vLLM directory not found"
@@ -34,6 +45,7 @@ else
 fi
 
 echo "✓ MOE directory: $MOE_DIR"
+echo "✓ Build target: $MOE_TARGET"
 
 # =============================================================================
 # Step 2: Copy GB10 Native Kernel v109
@@ -55,7 +67,9 @@ else
     # Find the line with "ENABLE_CUTLASS_MOE_GB10" and add v109 after it
     # This will add v109 kernel alongside existing GB10 support
 
-    cat > /tmp/gb10_v109_block.txt << 'CMAKE_BLOCK'
+    # Use unquoted heredoc so $MOE_DIR / $MOE_TARGET expand at script time.
+    # CMake variables (like SM121_ARCHS) are escaped with \$.
+    cat > /tmp/gb10_v109_block.txt << CMAKE_BLOCK
 
 # ============================================================================
 # GB10 Native MoE Kernel v109 (GeForce Blackwell Optimized)
@@ -65,31 +79,32 @@ else
 # Key Optimizations for GeForce:
 # - Sm120 ArchTag (GeForce Blackwell, NOT datacenter Sm100)
 # - KernelPtrArrayTmaWarpSpecializedPingpong (NVIDIA's grouped GEMM schedule)
-# - 128×128×128 tiles (NVIDIA's recommended for GeForce)
+# - 128x128x128 tiles (NVIDIA's recommended for GeForce)
 # - Optimized for LPDDR5X unified memory
-#
-# This configuration LEVERAGES GB10 hardware!
 # ============================================================================
 if(SM121_ARCHS)
-  message(STATUS "Adding GB10 native MoE kernel v109 (GeForce-optimized): ${SM121_ARCHS}")
-  list(APPEND VLLM_EXT_SRC "${MOE_DIR}/grouped_mm_gb10_native_v109.cu")
+  message(STATUS "Adding GB10 native MoE kernel v109 (GeForce-optimized): \${SM121_ARCHS}")
+  set(GB10_V109_SRC "${MOE_DIR}/grouped_mm_gb10_native_v109.cu")
+  set_gencode_flags_for_srcs(
+    SRCS "\${GB10_V109_SRC}"
+    CUDA_ARCHS "\${SM121_ARCHS}")
+  if(TARGET ${MOE_TARGET})
+    target_sources(${MOE_TARGET} PRIVATE "\${GB10_V109_SRC}")
+    target_compile_definitions(${MOE_TARGET} PRIVATE ENABLE_CUTLASS_MOE_GB10_V109=1)
+  else()
+    list(APPEND VLLM_EXT_SRC "\${GB10_V109_SRC}")
+  endif()
   list(APPEND VLLM_GPU_FLAGS "-DENABLE_CUTLASS_MOE_GB10_V109=1")
-  message(STATUS "✓ GB10 native MoE kernel v109 enabled (LEVERAGES GeForce!)")
+  message(STATUS "GB10 native MoE kernel v109 enabled (target: ${MOE_TARGET})")
 endif()
 
 CMAKE_BLOCK
 
-    # Insert before the gpu extension target definition, or append to end
-    ANCHOR_LINE=$(grep -n 'define_gpu_extension_target' CMakeLists.txt | head -1 | cut -d: -f1)
-
-    if [ -n "$ANCHOR_LINE" ]; then
-        INSERT_AT=$((ANCHOR_LINE - 1))
-        sed -i "${INSERT_AT}r /tmp/gb10_v109_block.txt" CMakeLists.txt
-        echo "GB10 v109 block inserted at line $INSERT_AT"
-    else
-        cat /tmp/gb10_v109_block.txt >> CMakeLists.txt
-        echo "GB10 v109 block appended to CMakeLists.txt (fallback)"
-    fi
+    # Append to end of CMakeLists.txt — see integrate_gb10_sm121.sh for the
+    # rationale. The `if(TARGET ${MOE_TARGET})` guard in the block ensures
+    # target_sources() routes to the right target only after it exists.
+    cat /tmp/gb10_v109_block.txt >> CMakeLists.txt
+    echo "GB10 v109 block appended to CMakeLists.txt (target=$MOE_TARGET)"
 
     rm -f /tmp/gb10_v109_block.txt
 

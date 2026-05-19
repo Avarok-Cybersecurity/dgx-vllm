@@ -45,27 +45,45 @@ RUN pip install torch torchvision torchaudio --index-url https://download.pytorc
 # Install xgrammar from PyPI (not in cu130 index)
 RUN pip install xgrammar
 
-# Install flashinfer using --pre flag for pre-release versions
-RUN pip install flashinfer-python --pre
+# Pin flashinfer to 0.6.7 (vllm v0.21.0's requirements may pin a newer
+# flashinfer but 0.6.7 is what's been validated end-to-end on sm_121 with
+# our JIT patches).
+RUN pip install flashinfer-python==0.6.7 flashinfer-cubin==0.6.7
 
 # Pin PyTorch CUDA version - flashinfer and vLLM pip install pull torch from
 # PyPI (CPU-only). Setting extra-index-url ensures all subsequent pip installs
 # resolve torch from the cu130 index instead of defaulting to CPU.
 ENV PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cu130
 
-# Reinstall PyTorch CUDA after flashinfer (which just downgraded it)
-RUN pip install torch==2.10.0+cu130 torchvision==0.25.0+cu130 torchaudio==2.10.0+cu130
+# Reinstall PyTorch CUDA after flashinfer (which just downgraded it).
+# vllm v0.21.0 requires torch 2.11.x; the libtorch_stable extension targets
+# TORCH_TARGET_VERSION=2.10 ABI so 2.11 is forward-compatible.
+RUN pip install torch==2.11.0+cu130 torchvision==0.26.0+cu130 torchaudio==2.11.0+cu130
 
-# Clone vLLM (pinned to known-good revision for reproducible builds)
+# Clone vLLM at v0.21.0. Changes vs v0.20.2 do not overlap our SM_121 / NVFP4 /
+# FP8 patch surface: CMakeLists.txt SCALED_MM_ARCHS / MLA_ARCHS /
+# CUTLASS_MOE_DATA_ARCHS / CUDA_SUPPORTED_ARCHS sed anchors all still match,
+# qutlass.cmake is unchanged, scaled_mm_entry.cu / nvfp4_utils.cuh /
+# cutlass.py FP8 dispatch anchors are present. Notable upstream change: C++
+# standard bumped to C++20 (CMAKE_CXX_STANDARD / CMAKE_CUDA_STANDARD); our
+# custom .cu files are C++17 and forward-compatible.
 RUN git clone https://github.com/vllm-project/vllm.git && \
-    cd vllm && git checkout 3b30e6150777de549b11f67dde3ecc0d3b1f3f50
+    cd vllm && git checkout v0.21.0
 WORKDIR /app/vllm
 
 # Prepare for existing torch
 RUN python3 use_existing_torch.py
 
-# Install build requirements
-RUN pip install -r requirements/build.txt
+# Install build requirements. v0.20.x uses per-target subdirectory layout:
+# build.txt -> build/cuda.txt. Fall through to the legacy path if building
+# against an older vllm tag.
+RUN if [ -f requirements/build/cuda.txt ]; then \
+      pip install -r requirements/build/cuda.txt; \
+    elif [ -f requirements/build.txt ]; then \
+      pip install -r requirements/build.txt; \
+    else \
+      echo "ERROR: no build requirements file found" && exit 1; \
+    fi
 
 # ============================================================================
 # Install FP4 Type Definitions for CUDA 13.0
@@ -106,6 +124,24 @@ RUN if [ -f CMakeLists.txt ]; then \
     # Add 12.1f to CUTLASS_MOE_DATA_ARCHS (MoE data handling) \
     sed -i 's/cuda_archs_loose_intersection(CUTLASS_MOE_DATA_ARCHS "9\.0a;10\.0f;11\.0f;12\.0f"/cuda_archs_loose_intersection(CUTLASS_MOE_DATA_ARCHS "9.0a;10.0f;11.0f;12.0f;12.1f"/g' CMakeLists.txt; \
 fi
+
+# ============================================================================
+# Disable qutlass build on sm_121 (port: vllm v0.21.0)
+# ============================================================================
+# v0.19.1 added QuTLASS (github.com/IST-DASLab/qutlass) as an external fetched
+# dep providing fast MXFP4/NVFP4 quant kernels. Its sources use the PTX
+# instruction `cvt.e2m1x2`, which CUDA 13.0 ptxas refuses to emit for
+# `sm_121` ("Instruction 'cvt with .e2m1x2' not supported on .target 'sm_121'"),
+# even with `-arch=sm_121a`. Force QUTLASS_ARCHS to empty so the if-guard at
+# qutlass.cmake:40 fails and the file falls through to the "Skipping build"
+# branch. vLLM's own NVFP4 path (with Avarok's software-E2M1 nvfp4_utils.cuh
+# patch applied below) covers the lost functionality.
+# ============================================================================
+RUN if [ -f cmake/external_projects/qutlass.cmake ]; then \
+      sed -i 's|cuda_archs_loose_intersection(QUTLASS_ARCHS "10\.0f;12\.0f" "${CUDA_ARCHS}")|set(QUTLASS_ARCHS "")  # sm_121 port: qutlass FP4 kernels use cvt.e2m1x2 which is unsupported by ptxas for sm_121|' cmake/external_projects/qutlass.cmake && \
+      sed -i 's|cuda_archs_loose_intersection(QUTLASS_ARCHS "12\.0a;12\.1a;10\.0a;10\.3a" "${CUDA_ARCHS}")|set(QUTLASS_ARCHS "")  # sm_121 port: see comment above|' cmake/external_projects/qutlass.cmake && \
+      echo "qutlass.cmake after patch:" && grep -n "QUTLASS_ARCHS" cmake/external_projects/qutlass.cmake | head -10; \
+    fi
 
 # ============================================================================
 # Integrate Native SM_121 Kernels for GB10 (NO FALLBACKS)
@@ -305,16 +341,22 @@ ENV TORCH_NCCL_BLOCKING_WAIT=1
 # Install vLLM with local build (this takes a while)
 # Pin torch to cu130 via constraints to prevent pip from downgrading to CPU version.
 # Without this, vLLM's dependency resolution replaces torch+cu130 with torch (CPU).
-RUN echo "torch==2.10.0+cu130" > /tmp/constraints.txt && \
-    echo "torchvision==0.25.0+cu130" >> /tmp/constraints.txt && \
-    echo "torchaudio==2.10.0+cu130" >> /tmp/constraints.txt && \
+#
+# fastsafetensors==0.3 (pulled in via vllm's requirements/cuda.txt) ships only
+# an sdist for ARM64+py3.12 and needs pybind11 at build time. Because we use
+# --no-build-isolation, pip won't fetch pybind11 itself — install it eagerly so
+# the fastsafetensors source build succeeds.
+RUN pip install pybind11
+RUN echo "torch==2.11.0+cu130" > /tmp/constraints.txt && \
+    echo "torchvision==0.26.0+cu130" >> /tmp/constraints.txt && \
+    echo "torchaudio==2.11.0+cu130" >> /tmp/constraints.txt && \
     PIP_CONSTRAINT=/tmp/constraints.txt pip install --no-build-isolation -e . -v --pre
 
 # Fix PyTorch CUDA: vLLM pip install pulls torch from PyPI (CPU-only) despite
 # PIP_EXTRA_INDEX_URL. Force reinstall cu130 version. The CUDA extensions were
 # already compiled against CUDA torch (from our pre-build install), so the .so
 # files are compatible - only the Python package metadata needs fixing.
-RUN pip install torch==2.10.0+cu130 torchvision==0.25.0+cu130 torchaudio==2.10.0+cu130 \
+RUN pip install torch==2.11.0+cu130 torchvision==0.26.0+cu130 torchaudio==2.11.0+cu130 \
     --index-url https://download.pytorch.org/whl/cu130 --force-reinstall --no-deps
 
 # ============================================================================
@@ -393,10 +435,10 @@ WORKDIR /app/vllm
 EXPOSE 8888 6379
 
 # Version metadata
-LABEL version="22"
-LABEL build_date="2026-02-18"
-LABEL vllm_source="3b30e6150-patched"
-LABEL pytorch_version="stable-cu130"
+LABEL version="26-v0.21.0-port"
+LABEL build_date="2026-05-19"
+LABEL vllm_source="v0.21.0-avarok-patched"
+LABEL pytorch_version="2.11.0-cu130"
 LABEL compute_capability="12.1a-gb10"
 LABEL quantization_support="fp8-nvfp4"
 LABEL sm121_fp8_backend="torch-scaled-mm-fallback"

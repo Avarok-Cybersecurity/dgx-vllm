@@ -9,12 +9,19 @@ echo "║           SM_121 FP8 Backend Fix (Updated)                ║"
 echo "╚════════════════════════════════════════════════════════════╝"
 echo ""
 
-CUTLASS_FILE="/app/vllm/vllm/model_executor/layers/quantization/kernels/scaled_mm/cutlass.py"
+# vLLM v0.19.1 moved the file from model_executor/layers/quantization/kernels/
+# to model_executor/kernels/linear/. Fall back through both locations.
+CUTLASS_FILE_NEW="/app/vllm/vllm/model_executor/kernels/linear/scaled_mm/cutlass.py"
+CUTLASS_FILE_OLD="/app/vllm/vllm/model_executor/layers/quantization/kernels/scaled_mm/cutlass.py"
 
-if [ ! -f "${CUTLASS_FILE}" ]; then
-    echo "ERROR: ${CUTLASS_FILE} not found!"
+if [ -f "${CUTLASS_FILE_NEW}" ]; then
+    CUTLASS_FILE="${CUTLASS_FILE_NEW}"
+elif [ -f "${CUTLASS_FILE_OLD}" ]; then
+    CUTLASS_FILE="${CUTLASS_FILE_OLD}"
+else
+    echo "ERROR: scaled_mm/cutlass.py not found at either expected path!"
     echo "Searching for scaled_mm files..."
-    find /app/vllm -name "cutlass.py" 2>/dev/null | head -10
+    find /app/vllm -path '*/scaled_mm/cutlass.py' 2>/dev/null | head -10
     exit 1
 fi
 

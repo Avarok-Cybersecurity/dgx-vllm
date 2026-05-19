@@ -13,10 +13,19 @@ This allows nvfp4_quant_kernels.cu, nvfp4_experts_quant.cu, and
 activation_nvfp4_quant_fusion_kernels.cu to compile for SM121.
 """
 
+import os
 import sys
 
 VLLM_DIR = "/app/vllm"
-UTILS_FILE = f"{VLLM_DIR}/csrc/quantization/fp4/nvfp4_utils.cuh"
+
+# v0.20.0 moved csrc/quantization/fp4/* into csrc/libtorch_stable/quantization/fp4/*
+# (the rest of the kernel files moved with it). Detect either location so this
+# script keeps working across vllm versions.
+_CANDIDATES = [
+    f"{VLLM_DIR}/csrc/libtorch_stable/quantization/fp4/nvfp4_utils.cuh",
+    f"{VLLM_DIR}/csrc/quantization/fp4/nvfp4_utils.cuh",
+]
+UTILS_FILE = next((p for p in _CANDIDATES if os.path.exists(p)), _CANDIDATES[0])
 
 # Software E2M1 helper - inserted after "namespace vllm {"
 SW_E2M1_HELPER = r"""

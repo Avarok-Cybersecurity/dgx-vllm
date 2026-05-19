@@ -34,6 +34,9 @@ echo "✓ Backup created"
 # Add this AFTER the SM_120 section (after line ~550)
 # This ensures that when SM_120 is built, the dispatcher also gets the flag
 
+# Detect dispatcher path. v0.20.0+ moved scaled_mm_entry.cu to libtorch_stable.
+# The CMake block tries the new path first via if(EXISTS) and falls back to
+# the legacy path so this script works against either vllm version.
 cat > /tmp/v115_dispatcher_fix.cmake << 'CMAKE_FIX'
 
 # ============================================================================
@@ -42,19 +45,33 @@ cat > /tmp/v115_dispatcher_fix.cmake << 'CMAKE_FIX'
 # Problem: VLLM_GPU_FLAGS is set, but scaled_mm_entry.cu might be compiled
 # before the flag is applied. Solution: Explicitly set compile definitions
 # for the dispatcher file after SM_120 section.
+#
+# v0.20.0+ moved the dispatcher to csrc/libtorch_stable/. We add the flag to
+# whichever path actually exists in the source tree.
 # ============================================================================
 if(ENABLE_SCALED_MM_SM120 OR TARGET_SM120_BUILT)
-  # Find scaled_mm_entry.cu in the sources and add compile definition
-  set(DISPATCHER_FILE "csrc/quantization/w8a8/cutlass/scaled_mm_entry.cu")
-
-  # Add compile definition specifically for this file
-  set_source_files_properties(
-    ${DISPATCHER_FILE}
-    PROPERTIES
-    COMPILE_DEFINITIONS "ENABLE_SCALED_MM_SM120=1"
+  set(_VLLM_DISPATCHER_CANDIDATES
+    "${CMAKE_CURRENT_SOURCE_DIR}/csrc/libtorch_stable/quantization/w8a8/cutlass/scaled_mm_entry.cu"
+    "${CMAKE_CURRENT_SOURCE_DIR}/csrc/quantization/w8a8/cutlass/scaled_mm_entry.cu"
   )
+  set(DISPATCHER_FILE "")
+  foreach(_candidate IN LISTS _VLLM_DISPATCHER_CANDIDATES)
+    if(EXISTS "${_candidate}")
+      set(DISPATCHER_FILE "${_candidate}")
+      break()
+    endif()
+  endforeach()
 
-  message(STATUS "v115: Set ENABLE_SCALED_MM_SM120=1 for ${DISPATCHER_FILE}")
+  if(DISPATCHER_FILE)
+    set_source_files_properties(
+      ${DISPATCHER_FILE}
+      PROPERTIES
+      COMPILE_DEFINITIONS "ENABLE_SCALED_MM_SM120=1"
+    )
+    message(STATUS "v115: Set ENABLE_SCALED_MM_SM120=1 for ${DISPATCHER_FILE}")
+  else()
+    message(WARNING "v115: scaled_mm_entry.cu not found in either legacy or libtorch_stable path")
+  endif()
 endif()
 
 CMAKE_FIX
